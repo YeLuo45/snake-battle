@@ -55,7 +55,9 @@ export function GameCanvas({ mode, skin, onBack }) {
   }
 
   function initGame() {
+    console.log('[INIT] starting');
     const snake = createSnake();
+    console.log('[INIT] snake created', snake);
     const game = gameRef.current;
     game.snake = snake;
     game.dir = DIRECTIONS.RIGHT;
@@ -211,15 +213,18 @@ export function GameCanvas({ mode, skin, onBack }) {
 
   const doTick = useCallback(() => {
     const game = gameRef.current;
+    console.log('[TICK]', { gameOver: game.gameOver, paused: game.paused, dir: game.dir, snakeHead: game.snake?.[0] });
     if (game.gameOver || game.paused) return;
 
     if (mode === 'classic') {
       // Move player
       const head = game.snake[0];
       const newHead = { x: head.x + game.dir.x, y: head.y + game.dir.y };
+      console.log('[TICK] classic move', { head, newHead, dir: game.dir });
 
       // Wall collision
       if (newHead.x < 0 || newHead.x >= GRID_SIZE || newHead.y < 0 || newHead.y >= GRID_SIZE) {
+        console.log('[TICK] wall collision');
         game.gameOver = true;
         game.playerAlive = false;
         playerAliveRef.current = false;
@@ -229,6 +234,7 @@ export function GameCanvas({ mode, skin, onBack }) {
 
       // Self collision
       if (game.snake.some((s, i) => i > 0 && s.x === newHead.x && s.y === newHead.y)) {
+        console.log('[TICK] self collision');
         game.gameOver = true;
         game.playerAlive = false;
         playerAliveRef.current = false;
