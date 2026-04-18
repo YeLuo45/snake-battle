@@ -69,7 +69,7 @@ export function GameCanvas({ mode, skin, onBack }) {
     playerAliveRef.current = true;
 
     if (mode === 'battle') {
-      // Spawn 3 AI snakes
+      // Spawn 3 AI snakes BEFORE spawning food (so spawnFood can check AI positions)
       const colors = ['#e94560', '#4d96ff', '#ffd93d'];
       for (let c = 0; c < 3; c++) {
         const edge = Math.floor(Math.random() * 4);
