@@ -2,9 +2,10 @@ import React, { useState } from 'react';
 import { GameCanvas } from './components/GameCanvas';
 import { ModeSelect } from './components/ModeSelect';
 import { SkinPicker } from './components/SkinPicker';
+import { useStorage } from './hooks/useStorage';
 
 function App() {
-  const [mode, setMode] = useState(null); // null | 'classic' | 'battle'
+  const [mode, setMode] = useState(null);
   const [skin, setSkin] = useStorage('snake-classic-skin', 'classic');
 
   return (
@@ -18,27 +19,6 @@ function App() {
       )}
     </div>
   );
-}
-
-function useStorage(key, initialValue) {
-  const [storedValue, setStoredValue] = useState(() => {
-    try {
-      const item = window.localStorage.getItem(key);
-      return item ? JSON.parse(item) : initialValue;
-    } catch {
-      return initialValue;
-    }
-  });
-
-  const setValue = (value) => {
-    try {
-      const valueToStore = value instanceof Function ? value(storedValue) : value;
-      setStoredValue(valueToStore);
-      window.localStorage.setItem(key, JSON.stringify(valueToStore));
-    } catch {}
-  };
-
-  return [storedValue, setValue];
 }
 
 export default App;
