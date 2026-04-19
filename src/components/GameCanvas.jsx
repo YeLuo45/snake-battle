@@ -72,7 +72,7 @@ function initState(mode) {
 }
 
 function gameReducer(state, action) {
-  if (!state) return state;
+  if (!state && action.type !== 'SET_MODE') return state;
   switch (action.type) {
     case 'TICK': {
       if (state.gameOver || state.paused) return state;
@@ -299,10 +299,10 @@ export function GameCanvas({ mode, skin, onBack }) {
   useEffect(() => {
     dispatch({ type: 'SET_MODE', mode });
   }, [mode]);
-
   // Keyboard controls
   useEffect(() => {
     const handler = (e) => {
+      if (!state || state.gameOver) return;
       const keyMap = {
         ArrowUp: 'UP', KeyW: 'UP',
         ArrowDown: 'DOWN', KeyS: 'DOWN',
@@ -316,22 +316,22 @@ export function GameCanvas({ mode, skin, onBack }) {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, []);
+  }, [state?.gameOver]);
 
   // Timer
   useEffect(() => {
-    if (state.mode !== 'battle' || state.gameOver || state.paused) return;
+    if (!state || state.mode !== 'battle' || state.gameOver || state.paused) return;
     const t = setInterval(() => dispatch({ type: 'TICK' }), TICK_INTERVAL.battle * 3);
     return () => clearInterval(t);
-  }, [state.mode, state.gameOver, state.paused, state.tick]);
+  }, [state?.mode, state?.gameOver, state?.paused, state?.tick]);
 
   // Game loop
   useEffect(() => {
-    if (state.gameOver || state.paused) return;
+    if (!state || state.gameOver || state.paused) return;
     const interval = TICK_INTERVAL[state.mode];
     const id = setInterval(() => dispatch({ type: 'TICK' }), interval);
     return () => clearInterval(id);
-  }, [state.mode, state.gameOver, state.paused, state.tick]);
+  }, [state?.mode, state?.gameOver, state?.paused, state?.tick]);
 
   // Canvas size
   const canvasSize = Math.min(window.innerWidth - 32, window.innerHeight - 200);
@@ -340,7 +340,7 @@ export function GameCanvas({ mode, skin, onBack }) {
   // Draw
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !state) return;
     const ctx = canvas.getContext('2d');
     const { playerSnake, playerAlive, aiSnakes, foods } = state;
 
@@ -386,6 +386,8 @@ export function GameCanvas({ mode, skin, onBack }) {
       if (ai.alive) drawSnake(ai.segments, ai.color);
     }
   }, [state.tick, skinData, canvasSize, cellSize]);
+
+  if (!state) return null;
 
   const handleDirection = (dir) => dispatch({ type: 'SET_DIR', dir });
   const handlePause = () => dispatch({ type: 'PAUSE' });
