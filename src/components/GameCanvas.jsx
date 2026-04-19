@@ -1,121 +1,342 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useReducer, useCallback } from 'react';
 import { GRID_SIZE, TICK_INTERVAL, DIRECTIONS } from '../utils/constants';
 import { getSkin } from '../utils/skins';
 import { GameOver } from './GameOver';
 import { Controls } from './Controls';
 
-export function GameCanvas({ mode, skin, onBack }) {
-  const canvasRef = useRef(null);
-  const skinData = getSkin(skin);
+function createSnake(x, y, length, dir) {
+  return Array.from({ length }, (_, i) => ({
+    x: x - i * dir.x,
+    y: y - i * dir.y,
+  }));
+}
 
-  // Refs to avoid stale closures in the game loop
-  const gameRef = useRef({
-    snake: null,
-    dir: DIRECTIONS.RIGHT,
-    foods: [],
-    aiSnakes: [],
+function randomEdge() {
+  const edge = Math.floor(Math.random() * 4);
+  let x, y, dir;
+  if (edge === 0) { x = Math.floor(Math.random() * GRID_SIZE); y = 0; dir = DIRECTIONS.DOWN; }
+  else if (edge === 1) { x = GRID_SIZE - 1; y = Math.floor(Math.random() * GRID_SIZE); dir = DIRECTIONS.LEFT; }
+  else if (edge === 2) { x = Math.floor(Math.random() * GRID_SIZE); y = GRID_SIZE - 1; dir = DIRECTIONS.UP; }
+  else { x = 0; y = Math.floor(Math.random() * GRID_SIZE); dir = DIRECTIONS.RIGHT; }
+  return { x, y, dir };
+}
+
+function spawnFood(allSnakes, existingFoods) {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const pos = {
+      x: Math.floor(Math.random() * GRID_SIZE),
+      y: Math.floor(Math.random() * GRID_SIZE),
+    };
+    const occupied = allSnakes.some(snake =>
+      snake.some(seg => seg.x === pos.x && seg.y === pos.y)
+    ) || existingFoods.some(f => f.x === pos.x && f.y === pos.y);
+    if (!occupied) return pos;
+  }
+  return null;
+}
+
+function initState(mode) {
+  const playerSnake = createSnake(
+    Math.floor(GRID_SIZE / 2),
+    Math.floor(GRID_SIZE / 2),
+    3,
+    DIRECTIONS.RIGHT
+  );
+
+  const aiSnakes = mode === 'battle' ? [
+    { id: 0, color: '#e94560', segments: createSnake(...Object.values(randomEdge()), 3), alive: true },
+    { id: 1, color: '#4d96ff', segments: createSnake(...Object.values(randomEdge()), 3), alive: true },
+    { id: 2, color: '#ffd93d', segments: createSnake(...Object.values(randomEdge()), 3), alive: true },
+  ] : [];
+
+  const allSnakes = [playerSnake, ...aiSnakes.filter(a => a.alive).map(a => a.segments)];
+  const foods = [];
+  for (let i = 0; i < (mode === 'battle' ? 5 : 1); i++) {
+    const f = spawnFood(allSnakes, foods);
+    if (f) foods.push(f);
+  }
+
+  return {
+    mode,
+    playerSnake,
+    playerDir: 'RIGHT',
+    playerAlive: true,
+    aiSnakes,
+    foods,
     score: 0,
     gameOver: false,
     paused: false,
-    playerAlive: true,
     timeLeft: 180,
+    tick: 0,
+  };
+}
+
+function gameReducer(state, action) {
+  switch (action.type) {
+    case 'TICK': {
+      if (state.gameOver || state.paused) return state;
+      return tick(state);
+    }
+    case 'SET_DIR': {
+      const { dir } = action;
+      const opposite = { UP: 'DOWN', DOWN: 'UP', LEFT: 'RIGHT', RIGHT: 'LEFT' };
+      if (opposite[dir] === state.playerDir) return state;
+      return { ...state, playerDir: dir };
+    }
+    case 'PAUSE':
+      return { ...state, paused: !state.paused };
+    case 'RESTART':
+      return initState(state.mode);
+    case 'BACK':
+      return { ...state, mode: null };
+    case 'SET_MODE':
+      return initState(action.mode);
+    default:
+      return state;
+  }
+}
+
+function tick(state) {
+  const { mode, playerSnake, playerDir, playerAlive, aiSnakes, foods, score } = state;
+
+  if (mode === 'classic') {
+    return tickClassic(state);
+  } else {
+    return tickBattle(state);
+  }
+}
+
+function tickClassic(state) {
+  const { playerSnake, playerDir, foods, score } = state;
+  const dir = DIRECTIONS[playerDir];
+  const head = playerSnake[0];
+  const newHead = { x: head.x + dir.x, y: head.y + dir.y };
+
+  // Wall
+  if (newHead.x < 0 || newHead.x >= GRID_SIZE || newHead.y < 0 || newHead.y >= GRID_SIZE) {
+    return { ...state, gameOver: true, playerAlive: false, tick: state.tick + 1 };
+  }
+  // Self
+  if (playerSnake.some((s, i) => i > 0 && s.x === newHead.x && s.y === newHead.y)) {
+    return { ...state, gameOver: true, playerAlive: false, tick: state.tick + 1 };
+  }
+
+  const foodIdx = foods.findIndex(f => f.x === newHead.x && f.y === newHead.y);
+  let newSnake = playerSnake;
+  let newFoods = foods;
+  let newScore = score;
+
+  if (foodIdx >= 0) {
+    newSnake = [newHead, ...playerSnake];
+    newFoods = foods.filter((_, i) => i !== foodIdx);
+    const spawned = spawnFood([newSnake], newFoods);
+    if (spawned) newFoods = [...newFoods, spawned];
+    newScore += 10;
+  } else {
+    newSnake = [newHead, ...playerSnake.slice(0, -1)];
+  }
+
+  return { ...state, playerSnake: newSnake, foods: newFoods, score: newScore, tick: state.tick + 1 };
+}
+
+function getAIMove(aiSnake, allSnakes, foods) {
+  const head = aiSnake[0];
+  const possible = [DIRECTIONS.UP, DIRECTIONS.RIGHT, DIRECTIONS.DOWN, DIRECTIONS.LEFT];
+
+  const safe = possible.filter(dir => {
+    const nx = head.x + dir.x;
+    const ny = head.y + dir.y;
+    if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) return false;
+    for (const snake of allSnakes) {
+      const startIdx = snake === aiSnake ? 1 : 0;
+      for (let i = startIdx; i < snake.length; i++) {
+        if (snake[i].x === nx && snake[i].y === ny) return false;
+      }
+    }
+    return true;
   });
-  const [, forceUpdate] = useState(0);
-  const rerender = useCallback(() => forceUpdate(n => n + 1), []);
 
-  const aiSnakesRef = useRef([]);
-  const playerAliveRef = useRef(true);
+  if (!safe.length) return null;
+  if (Math.random() < 0.1) return safe[Math.floor(Math.random() * safe.length)];
 
-  // Calculate canvas size once
-  const canvasSize = Math.min(window.innerWidth, window.innerHeight) * 0.9;
-  const cellSize = canvasSize / GRID_SIZE;
-
-  function createSnake() {
-    const x = Math.floor(GRID_SIZE / 2);
-    const y = Math.floor(GRID_SIZE / 2);
-    return Array.from({ length: 3 }, (_, i) => ({ x: x - i, y }));
+  let nearest = null, minDist = Infinity;
+  for (const f of foods) {
+    const d = Math.abs(head.x - f.x) + Math.abs(head.y - f.y);
+    if (d < minDist) { minDist = d; nearest = f; }
   }
 
-  function spawnFood(game) {
-    let attempts = 0;
-    while (attempts < 100) {
-      const pos = {
-        x: Math.floor(Math.random() * GRID_SIZE),
-        y: Math.floor(Math.random() * GRID_SIZE),
-      };
-      const occupied = game.snake.some(s => s.x === pos.x && s.y === pos.y) ||
-        game.foods.some(f => f.x === pos.x && f.y === pos.y) ||
-        game.aiSnakes.some(ai => ai.alive && ai.segments.some(s => s.x === pos.x && s.y === pos.y));
-      if (!occupied) {
-        return pos;
+  if (!nearest) return safe[Math.floor(Math.random() * safe.length)];
+
+  let best = safe[0], bestDist = Infinity;
+  for (const dir of safe) {
+    const nx = head.x + dir.x;
+    const ny = head.y + dir.y;
+    const d = Math.abs(nx - nearest.x) + Math.abs(ny - nearest.y);
+    if (d < bestDist) { bestDist = d; best = dir; }
+  }
+  return best;
+}
+
+function tickBattle(state) {
+  const { playerSnake, playerDir, playerAlive, aiSnakes, foods, score, timeLeft } = state;
+  let { playerSnake: np, playerAlive: npa, aiSnakes: na, foods: nf, score: ns } = state;
+
+  // Move player
+  if (npa) {
+    const dir = DIRECTIONS[playerDir];
+    const head = np[0];
+    const newHead = { x: head.x + dir.x, y: head.y + dir.y };
+
+    if (newHead.x < 0 || newHead.x >= GRID_SIZE || newHead.y < 0 || newHead.y >= GRID_SIZE) {
+      npa = false;
+    } else if (np.some((s, i) => i > 0 && s.x === newHead.x && s.y === newHead.y)) {
+      npa = false;
+    } else {
+      const fi = nf.findIndex(f => f.x === newHead.x && f.y === newHead.y);
+      if (fi >= 0) {
+        np = [newHead, ...np];
+        nf = nf.filter((_, i) => i !== fi);
+        const spawned = spawnFood([np, ...na.filter(a => a.alive).map(a => a.segments)], nf);
+        if (spawned) nf = [...nf, spawned];
+        ns += 10;
+      } else {
+        np = [newHead, ...np.slice(0, -1)];
       }
-      attempts++;
     }
-    return null;
   }
 
-  function initGame() {
-    console.log('[INIT] starting');
-    const snake = createSnake();
-    console.log('[INIT] snake created', snake);
-    const game = gameRef.current;
-    game.snake = snake;
-    game.dir = DIRECTIONS.RIGHT;
-    game.score = 0;
-    game.gameOver = false;
-    game.paused = false;
-    game.playerAlive = true;
-    game.foods = [];
-    game.aiSnakes = [];
-    game.timeLeft = 180;
-    playerAliveRef.current = true;
+  // Move AI
+  na = na.map(ai => {
+    if (!ai.alive) return ai;
+    const allSnakes = [np, ...na.filter(a => a.alive).map(a => a.segments)];
+    const dir = getAIMove(ai.segments, allSnakes, nf);
+    if (!dir) return ai;
 
-    if (mode === 'battle') {
-      // Spawn 3 AI snakes BEFORE spawning food (so spawnFood can check AI positions)
-      const colors = ['#e94560', '#4d96ff', '#ffd93d'];
-      for (let c = 0; c < 3; c++) {
-        const edge = Math.floor(Math.random() * 4);
-        let x, y, dir;
-        if (edge === 0) { x = Math.floor(Math.random() * GRID_SIZE); y = 0; dir = DIRECTIONS.DOWN; }
-        else if (edge === 1) { x = GRID_SIZE - 1; y = Math.floor(Math.random() * GRID_SIZE); dir = DIRECTIONS.LEFT; }
-        else if (edge === 2) { x = Math.floor(Math.random() * GRID_SIZE); y = GRID_SIZE - 1; dir = DIRECTIONS.UP; }
-        else { x = 0; y = Math.floor(Math.random() * GRID_SIZE); dir = DIRECTIONS.RIGHT; }
-        game.aiSnakes.push({
-          id: c,
-          color: colors[c],
-          segments: Array.from({ length: 3 }, (_, i) => ({ x: x - i * dir.x, y: y - i * dir.y })),
-          direction: dir,
-          alive: true,
-        });
+    const head = ai.segments[0];
+    const newHead = { x: head.x + dir.x, y: head.y + dir.y };
+
+    // Wall
+    if (newHead.x < 0 || newHead.x >= GRID_SIZE || newHead.y < 0 || newHead.y >= GRID_SIZE) {
+      const newFoods = [...nf];
+      for (let j = 0; j < 3; j++) { const f = spawnFood([np, ...na.filter(a => a.alive && a.id !== ai.id).map(a => a.segments)], newFoods); if (f) newFoods.push(f); }
+      nf = newFoods;
+      return { ...ai, alive: false };
+    }
+
+    // Self
+    if (ai.segments.some((s, i) => i > 0 && s.x === newHead.x && s.y === newHead.y)) {
+      const newFoods = [...nf];
+      for (let j = 0; j < 3; j++) { const f = spawnFood([np, ...na.filter(a => a.alive && a.id !== ai.id).map(a => a.segments)], newFoods); if (f) newFoods.push(f); }
+      nf = newFoods;
+      return { ...ai, alive: false };
+    }
+
+    // Head-to-head with player
+    if (npa && newHead.x === np[0].x && newHead.y === np[0].y) {
+      const newFoods = [...nf];
+      for (let j = 0; j < ai.segments.length; j++) { const f = spawnFood([np, ...na.filter(a => a.alive && a.id !== ai.id).map(a => a.segments)], newFoods); if (f) newFoods.push(f); }
+      nf = newFoods;
+      return { ...ai, alive: false };
+    }
+
+    // Head-to-head with other AI
+    let dead = false;
+    for (const other of na) {
+      if (other.id === ai.id || !other.alive) continue;
+      if (newHead.x === other.segments[0].x && newHead.y === other.segments[0].y) {
+        const newFoods = [...nf];
+        for (let j = 0; j < ai.segments.length; j++) { const f = spawnFood([np, ...na.filter(a => a.alive && a.id !== ai.id).map(a => a.segments)], newFoods); if (f) newFoods.push(f); }
+        nf = newFoods;
+        dead = true;
+        break;
       }
-      aiSnakesRef.current = game.aiSnakes;
+    }
+    if (dead) return { ...ai, alive: false };
+
+    const fi = nf.findIndex(f => f.x === newHead.x && f.y === newHead.y);
+    if (fi >= 0) {
+      const newSegments = [newHead, ...ai.segments];
+      const spawned = spawnFood([np, ...na.filter(a => a.alive && a.id !== ai.id).map(a => a.segments), newSegments], nf.filter((_, i) => i !== fi));
+      nf = [...nf.filter((_, i) => i !== fi), ...(spawned ? [spawned] : [])];
+      return { ...ai, segments: newSegments };
     }
 
-    // Spawn initial food
-    for (let i = 0; i < (mode === 'battle' ? 5 : 1); i++) {
-      const food = spawnFood(game);
-      if (food) game.foods.push(food);
-    }
+    return { ...ai, segments: [newHead, ...ai.segments.slice(0, -1)] };
+  });
+
+  // Player eats AI head
+  if (npa) {
+    na = na.map(ai => {
+      if (!ai.alive) return ai;
+      if (np[0].x === ai.segments[0].x && np[0].y === ai.segments[0].y) {
+        ns += 50;
+        const newFoods = [...nf];
+        for (let j = 0; j < ai.segments.length; j++) { const f = spawnFood([np, ...na.filter(a => a.alive && a.id !== ai.id).map(a => a.segments)], newFoods); if (f) newFoods.push(f); }
+        nf = newFoods;
+        return { ...ai, alive: false };
+      }
+      return ai;
+    });
   }
 
-  // Initialize on mount
+  const newTimeLeft = timeLeft - 1;
+  const newGameOver = newTimeLeft <= 0 || (!npa && !na.some(a => a.alive));
+
+  return { ...state, playerSnake: np, playerAlive: npa, aiSnakes: na, foods: nf, score: ns, timeLeft: newTimeLeft, gameOver: newGameOver, tick: state.tick + 1 };
+}
+
+export function GameCanvas({ mode, skin, onBack }) {
+  const canvasRef = useRef(null);
+  const skinData = getSkin(skin);
+  const [state, dispatch] = useReducer(gameReducer, mode, initState);
+
+  // Keyboard controls
   useEffect(() => {
-    initGame();
-    rerender();
+    const handler = (e) => {
+      const keyMap = {
+        ArrowUp: 'UP', KeyW: 'UP',
+        ArrowDown: 'DOWN', KeyS: 'DOWN',
+        ArrowLeft: 'LEFT', KeyA: 'LEFT',
+        ArrowRight: 'RIGHT', KeyD: 'RIGHT',
+        Space: 'PAUSE',
+      };
+      const action = keyMap[e.code];
+      if (action === 'PAUSE') { e.preventDefault(); dispatch({ type: 'PAUSE' }); }
+      else if (action) { e.preventDefault(); dispatch({ type: 'SET_DIR', dir: action }); }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
   }, []);
+
+  // Timer
+  useEffect(() => {
+    if (state.mode !== 'battle' || state.gameOver || state.paused) return;
+    const t = setInterval(() => dispatch({ type: 'TICK' }), TICK_INTERVAL.battle * 3);
+    return () => clearInterval(t);
+  }, [state.mode, state.gameOver, state.paused, state.tick]);
+
+  // Game loop
+  useEffect(() => {
+    if (state.gameOver || state.paused) return;
+    const interval = TICK_INTERVAL[state.mode];
+    const id = setInterval(() => dispatch({ type: 'TICK' }), interval);
+    return () => clearInterval(id);
+  }, [state.mode, state.gameOver, state.paused, state.tick]);
+
+  // Canvas size
+  const canvasSize = Math.min(window.innerWidth - 32, window.innerHeight - 200);
+  const cellSize = canvasSize / GRID_SIZE;
 
   // Draw
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !gameRef.current.snake) return;
+    if (!canvas) return;
     const ctx = canvas.getContext('2d');
-    const game = gameRef.current;
+    const { playerSnake, playerAlive, aiSnakes, foods } = state;
 
-    // Background
     ctx.fillStyle = skinData.background;
     ctx.fillRect(0, 0, canvasSize, canvasSize);
 
-    // Grid
     ctx.strokeStyle = skinData.gridColor;
     ctx.lineWidth = 0.5;
     for (let i = 0; i <= GRID_SIZE; i++) {
@@ -129,313 +350,44 @@ export function GameCanvas({ mode, skin, onBack }) {
       ctx.stroke();
     }
 
-    // Foods
-    for (const food of game.foods) {
+    for (const food of foods) {
       ctx.fillStyle = skinData.foodColor;
       ctx.beginPath();
       ctx.arc(food.x * cellSize + cellSize / 2, food.y * cellSize + cellSize / 2, cellSize / 2 - 2, 0, Math.PI * 2);
       ctx.fill();
     }
 
-    // Player snake
-    if (game.snake && game.playerAlive) {
-      for (let i = game.snake.length - 1; i >= 0; i--) {
-        const seg = game.snake[i];
+    function drawSnake(segments, color) {
+      for (let i = segments.length - 1; i >= 0; i--) {
+        const seg = segments[i];
         const x = seg.x * cellSize;
         const y = seg.y * cellSize;
-        ctx.fillStyle = i === 0 ? skinData.snakeColor : skinData.snakeColor;
-        ctx.globalAlpha = i === 0 ? 1 : 0.9;
-        ctx.fillRect(x + 1, y + 1, cellSize - 2, cellSize - 2);
-        ctx.globalAlpha = 1;
-        ctx.strokeStyle = skinData.snakeBorderColor;
-        ctx.lineWidth = 1;
-        ctx.strokeRect(x + 1, y + 1, cellSize - 2, cellSize - 2);
-      }
-    }
-
-    // AI snakes
-    for (const ai of game.aiSnakes) {
-      if (!ai.alive) continue;
-      for (let i = ai.segments.length - 1; i >= 0; i--) {
-        const seg = ai.segments[i];
-        const x = seg.x * cellSize;
-        const y = seg.y * cellSize;
-        ctx.fillStyle = i === 0 ? ai.color : ai.color;
-        ctx.globalAlpha = i === 0 ? 1 : 0.9;
+        ctx.fillStyle = color;
+        ctx.globalAlpha = i === 0 ? 1 : 0.85;
         ctx.fillRect(x + 1, y + 1, cellSize - 2, cellSize - 2);
         ctx.globalAlpha = 1;
       }
     }
-  });
 
-  // AI decision
-  function getAIMove(aiSnake, allSnakes, foods) {
-    const head = aiSnake[0];
-    const possible = [DIRECTIONS.UP, DIRECTIONS.RIGHT, DIRECTIONS.DOWN, DIRECTIONS.LEFT];
-
-    const safe = possible.filter(dir => {
-      const nx = head.x + dir.x;
-      const ny = head.y + dir.y;
-      if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) return false;
-      for (const s of allSnakes) {
-        for (let i = s === aiSnake ? 1 : 0; i < s.length; i++) {
-          if (s[i].x === nx && s[i].y === ny) return false;
-        }
-      }
-      return true;
-    });
-
-    if (!safe.length) return null;
-
-    // Find nearest food
-    let nearest = null, minDist = Infinity;
-    for (const f of foods) {
-      const d = Math.abs(head.x - f.x) + Math.abs(head.y - f.y);
-      if (d < minDist) { minDist = d; nearest = f; }
+    if (playerAlive) {
+      drawSnake(playerSnake, skinData.snakeColor);
     }
-
-    if (!nearest || Math.random() < 0.1) {
-      return safe[Math.floor(Math.random() * safe.length)];
+    for (const ai of aiSnakes) {
+      if (ai.alive) drawSnake(ai.segments, ai.color);
     }
+  }, [state.tick, skinData, canvasSize, cellSize]);
 
-    let best = safe[0], bestDist = Infinity;
-    for (const dir of safe) {
-      const nx = head.x + dir.x;
-      const ny = head.y + dir.y;
-      const d = Math.abs(nx - nearest.x) + Math.abs(ny - nearest.y);
-      if (d < bestDist) { bestDist = d; best = dir; }
-    }
-    return best;
-  }
+  const handleDirection = (dir) => dispatch({ type: 'SET_DIR', dir });
+  const handlePause = () => dispatch({ type: 'PAUSE' });
+  const handleRestart = () => dispatch({ type: 'RESTART' });
 
-  // Game tick
-  const tickRef = useRef(null);
-
-  const doTick = useCallback(() => {
-    const game = gameRef.current;
-    console.log('[TICK]', { gameOver: game.gameOver, paused: game.paused, dir: game.dir, snakeHead: game.snake?.[0] });
-    if (game.gameOver || game.paused) return;
-
-    if (mode === 'classic') {
-      // Move player
-      const head = game.snake[0];
-      const newHead = { x: head.x + game.dir.x, y: head.y + game.dir.y };
-      console.log('[TICK] classic move', { head, newHead, dir: game.dir });
-
-      // Wall collision
-      if (newHead.x < 0 || newHead.x >= GRID_SIZE || newHead.y < 0 || newHead.y >= GRID_SIZE) {
-        console.log('[TICK] wall collision');
-        game.gameOver = true;
-        game.playerAlive = false;
-        playerAliveRef.current = false;
-        rerender();
-        return;
-      }
-
-      // Self collision
-      if (game.snake.some((s, i) => i > 0 && s.x === newHead.x && s.y === newHead.y)) {
-        console.log('[TICK] self collision');
-        game.gameOver = true;
-        game.playerAlive = false;
-        playerAliveRef.current = false;
-        rerender();
-        return;
-      }
-
-      // Food collision
-      const foodIdx = game.foods.findIndex(f => f.x === newHead.x && f.y === newHead.y);
-      if (foodIdx >= 0) {
-        game.foods.splice(foodIdx, 1);
-        game.snake = [newHead, ...game.snake];
-        game.score += 10;
-        const newFood = spawnFood(game);
-        if (newFood) game.foods.push(newFood);
-      } else {
-        game.snake = [newHead, ...game.snake.slice(0, -1)];
-      }
-    } else {
-      // Battle mode
-      // Move player
-      if (game.playerAlive) {
-        const head = game.snake[0];
-        const newHead = { x: head.x + game.dir.x, y: head.y + game.dir.y };
-
-        if (newHead.x < 0 || newHead.x >= GRID_SIZE || newHead.y < 0 || newHead.y >= GRID_SIZE) {
-          game.playerAlive = false;
-          playerAliveRef.current = false;
-        } else if (game.snake.some((s, i) => i > 0 && s.x === newHead.x && s.y === newHead.y)) {
-          game.playerAlive = false;
-          playerAliveRef.current = false;
-        } else {
-          const foodIdx = game.foods.findIndex(f => f.x === newHead.x && f.y === newHead.y);
-          if (foodIdx >= 0) {
-            game.foods.splice(foodIdx, 1);
-            game.snake = [newHead, ...game.snake];
-            game.score += 10;
-            const nf = spawnFood(game);
-            if (nf) game.foods.push(nf);
-          } else {
-            game.snake = [newHead, ...game.snake.slice(0, -1)];
-          }
-        }
-      }
-
-      // Move AI
-      for (const ai of game.aiSnakes) {
-        if (!ai.alive) continue;
-        const allSnakes = [
-          ...game.aiSnakes.filter(a => a.alive).map(a => a.segments),
-          game.snake,
-        ];
-        const dir = getAIMove(ai, allSnakes, game.foods);
-        if (!dir) continue;
-
-        const head = ai.segments[0];
-        const newHead = { x: head.x + dir.x, y: head.y + dir.y };
-
-        // Wall / self
-        if (newHead.x < 0 || newHead.x >= GRID_SIZE || newHead.y < 0 || newHead.y >= GRID_SIZE ||
-            ai.segments.some((s, i) => i > 0 && s.x === newHead.x && s.y === newHead.y)) {
-          ai.alive = false;
-          for (let j = 0; j < 3; j++) {
-            const nf = spawnFood(game);
-            if (nf) game.foods.push(nf);
-          }
-          continue;
-        }
-
-        // Head-to-head with player
-        if (game.playerAlive && newHead.x === game.snake[0].x && newHead.y === game.snake[0].y) {
-          ai.alive = false;
-          for (let j = 0; j < 3; j++) {
-            const nf = spawnFood(game);
-            if (nf) game.foods.push(nf);
-          }
-          continue;
-        }
-
-        // Head-to-head with other AI
-        let headHit = false;
-        for (const other of game.aiSnakes) {
-          if (other.id === ai.id || !other.alive) continue;
-          if (newHead.x === other.segments[0].x && newHead.y === other.segments[0].y) {
-            ai.alive = false;
-            for (let j = 0; j < 3; j++) {
-              const nf = spawnFood(game);
-              if (nf) game.foods.push(nf);
-            }
-            headHit = true;
-            break;
-          }
-        }
-        if (headHit) continue;
-
-        const foodIdx = game.foods.findIndex(f => f.x === newHead.x && f.y === newHead.y);
-        if (foodIdx >= 0) {
-          game.foods.splice(foodIdx, 1);
-          ai.segments = [newHead, ...ai.segments];
-          const nf = spawnFood(game);
-          if (nf) game.foods.push(nf);
-        } else {
-          ai.segments = [newHead, ...ai.segments.slice(0, -1)];
-        }
-        ai.direction = dir;
-      }
-
-      // Player eats AI head
-      for (const ai of game.aiSnakes) {
-        if (!ai.alive) continue;
-        if (game.playerAlive && game.snake[0].x === ai.segments[0].x && game.snake[0].y === ai.segments[0].y) {
-          ai.alive = false;
-          game.score += 50;
-          for (let j = 0; j < ai.segments.length; j++) {
-            const nf = spawnFood(game);
-            if (nf) game.foods.push(nf);
-          }
-        }
-      }
-    }
-
-    rerender();
-  }, [mode, rerender]);
-
-  // Game loop
-  useEffect(() => {
-    if (gameRef.current.gameOver) return;
-    const interval = TICK_INTERVAL[mode];
-    tickRef.current = setInterval(doTick, interval);
-    return () => clearInterval(tickRef.current);
-  }, [doTick, mode]);
-
-  // Timer for battle mode
-  useEffect(() => {
-    if (mode !== 'battle') return;
-    const timer = setInterval(() => {
-      if (gameRef.current.gameOver || gameRef.current.paused) return;
-      gameRef.current.timeLeft--;
-      if (gameRef.current.timeLeft <= 0) {
-        gameRef.current.gameOver = true;
-        rerender();
-      }
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [rerender, mode]);
-
-  // Keyboard controls
-  useEffect(() => {
-    const handler = (e) => {
-      const game = gameRef.current;
-      if (game.gameOver) return;
-      const keyMap = {
-        ArrowUp: 'UP', KeyW: 'UP',
-        ArrowDown: 'DOWN', KeyS: 'DOWN',
-        ArrowLeft: 'LEFT', KeyA: 'LEFT',
-        ArrowRight: 'RIGHT', KeyD: 'RIGHT',
-        Space: 'PAUSE',
-      };
-      const action = keyMap[e.code];
-      if (action === 'PAUSE') {
-        game.paused = !game.paused;
-        rerender();
-      } else if (action) {
-        e.preventDefault();
-        const newDir = DIRECTIONS[action];
-        // Prevent reverse
-        if (newDir.x !== -game.dir.x || newDir.y !== -game.dir.y) {
-          game.dir = newDir;
-        }
-      }
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, []);
-
-  const handleDirection = (dir) => {
-    const game = gameRef.current;
-    const newDir = DIRECTIONS[dir];
-    if (newDir.x !== -game.dir.x || newDir.y !== -game.dir.y) {
-      game.dir = newDir;
-    }
-  };
-
-  const handlePause = () => {
-    gameRef.current.paused = !gameRef.current.paused;
-    rerender();
-  };
-
-  const handleRestart = () => {
-    initGame();
-    rerender();
-  };
-
-  const game = gameRef.current;
-  const displayScore = game.score;
-  const displayTime = mode === 'battle' ? `${Math.floor(game.timeLeft / 60)}:${String(game.timeLeft % 60).padStart(2, '0')}` : null;
+  const { score, timeLeft, gameOver, paused, aiSnakes, mode: gameMode } = state;
+  const displayTime = gameMode === 'battle' ? `${Math.floor(timeLeft / 60)}:${String(timeLeft % 60).padStart(2, '0')}` : null;
 
   const getRanking = () => {
     const entries = [
-      { name: '你', score: game.score, isPlayer: true },
-      ...game.aiSnakes.map((ai, i) => ({
+      { name: '你', score, isPlayer: true },
+      ...aiSnakes.map((ai, i) => ({
         name: `AI ${['红', '蓝', '黄'][i]}`,
         score: Math.max(0, (ai.segments.length - 3) * 10),
         isPlayer: false,
@@ -447,9 +399,9 @@ export function GameCanvas({ mode, skin, onBack }) {
   return (
     <div className="game-wrapper">
       <div className="game-header">
-        <button className="back-btn" onClick={onBack}>← 返回</button>
+        <button className="back-btn" onClick={() => dispatch({ type: 'BACK' })}>← 返回</button>
         <span className="score-display">
-          {displayTime ? `${displayTime} | ` : ''}得分：{displayScore}
+          {displayTime ? `${displayTime} | ` : ''}得分：{score}
         </span>
         <div />
       </div>
@@ -463,7 +415,7 @@ export function GameCanvas({ mode, skin, onBack }) {
 
       <Controls onDirection={handleDirection} onPause={handlePause} />
 
-      {game.paused && !game.gameOver && (
+      {paused && !gameOver && (
         <div className="modal-overlay" onClick={handlePause}>
           <div className="modal">
             <h2>已暂停</h2>
@@ -472,12 +424,12 @@ export function GameCanvas({ mode, skin, onBack }) {
         </div>
       )}
 
-      {game.gameOver && (
+      {gameOver && (
         <GameOver
-          score={game.score}
+          score={score}
           highScore={0}
-          isBattle={mode === 'battle'}
-          ranking={mode === 'battle' ? getRanking() : null}
+          isBattle={gameMode === 'battle'}
+          ranking={gameMode === 'battle' ? getRanking() : null}
           onRestart={handleRestart}
           onBack={onBack}
         />
