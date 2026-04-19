@@ -72,6 +72,7 @@ function initState(mode) {
 }
 
 function gameReducer(state, action) {
+  if (!state) return state;
   switch (action.type) {
     case 'TICK': {
       if (state.gameOver || state.paused) return state;
@@ -292,7 +293,12 @@ function tickBattle(state) {
 export function GameCanvas({ mode, skin, onBack }) {
   const canvasRef = useRef(null);
   const skinData = getSkin(skin);
-  const [state, dispatch] = useReducer(gameReducer, mode, initState);
+  const [state, dispatch] = useReducer(gameReducer, null);
+
+  // Initialize on mount and when mode changes
+  useEffect(() => {
+    dispatch({ type: 'SET_MODE', mode });
+  }, [mode]);
 
   // Keyboard controls
   useEffect(() => {
