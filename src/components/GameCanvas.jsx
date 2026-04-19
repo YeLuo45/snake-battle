@@ -140,6 +140,7 @@ function tickClassic(state) {
 }
 
 function getAIMove(aiSnake, allSnakes, foods) {
+  if (!aiSnake || !aiSnake.length || !aiSnake[0]) return null;
   const head = aiSnake[0];
   const possible = [DIRECTIONS.UP, DIRECTIONS.RIGHT, DIRECTIONS.DOWN, DIRECTIONS.LEFT];
 
@@ -148,8 +149,10 @@ function getAIMove(aiSnake, allSnakes, foods) {
     const ny = head.y + dir.y;
     if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) return false;
     for (const snake of allSnakes) {
+      if (!snake || !Array.isArray(snake)) continue;
       const startIdx = snake === aiSnake ? 1 : 0;
       for (let i = startIdx; i < snake.length; i++) {
+        if (!snake[i]) continue;
         if (snake[i].x === nx && snake[i].y === ny) return false;
       }
     }
@@ -161,6 +164,7 @@ function getAIMove(aiSnake, allSnakes, foods) {
 
   let nearest = null, minDist = Infinity;
   for (const f of foods) {
+    if (!f) continue;
     const d = Math.abs(head.x - f.x) + Math.abs(head.y - f.y);
     if (d < minDist) { minDist = d; nearest = f; }
   }
