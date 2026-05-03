@@ -125,6 +125,8 @@ function initState(mode, mapType = 'classic_map', aiPersonality = null) {
     placedMines: [],
     portalPair: null,
     isReverseControls: false,
+    // AI personality for battle mode
+    aiPersonality: aiPersonality || 'greedy',
   };
 }
 
@@ -139,7 +141,14 @@ function createBossSnake() {
   return createSnake(x, y, 10, dir);
 }
 
-function getAIMove(aiSnake, allSnakes, foods, obstacles = [], safeZones = []) {
+// AI personality types (mirror of useAI for standalone use)
+const AI_PERS = {
+  GREEDY: 'greedy',
+  AGGRESSIVE: 'aggressive',
+  RANDOM: 'random',
+};
+
+function getAIMove(aiSnake, allSnakes, foods, obstacles = [], safeZones = [], personality = AI_PERS.GREEDY) {
   if (!aiSnake?.length || !aiSnake[0]) return null;
   const head = aiSnake[0];
   const possible = [DIRECTIONS.UP, DIRECTIONS.RIGHT, DIRECTIONS.DOWN, DIRECTIONS.LEFT];
@@ -164,23 +173,62 @@ function getAIMove(aiSnake, allSnakes, foods, obstacles = [], safeZones = []) {
   });
 
   if (!safe.length) return null;
-  if (Math.random() < 0.1) return safe[Math.floor(Math.random() * safe.length)];
 
-  let nearest = null, minDist = Infinity;
+  // RANDOM: pure random among safe directions
+  if (personality === AI_PERS.RANDOM) {
+    return safe[Math.floor(Math.random() * safe.length)];
+  }
+
+  // Find nearest food
+  let nearestFood = null, minFoodDist = Infinity;
   for (const f of foods ?? []) {
     if (!f) continue;
     const d = Math.abs(head.x - f.x) + Math.abs(head.y - f.y);
-    if (d < minDist) { minDist = d; nearest = f; }
+    if (d < minFoodDist) { minFoodDist = d; nearestFood = f; }
   }
-  if (!nearest) return safe[Math.floor(Math.random() * safe.length)];
 
-  let best = safe[0], bestDist = Infinity;
-  for (const dir of safe) {
-    const nx = head.x + dir.x, ny = head.y + dir.y;
-    const d = Math.abs(nx - nearest.x) + Math.abs(ny - nearest.y);
-    if (d < bestDist) { bestDist = d; best = dir; }
+  // GREEDY (default): chase nearest food
+  if (personality === AI_PERS.GREEDY) {
+    if (!nearestFood) return safe[Math.floor(Math.random() * safe.length)];
+    let best = safe[0], bestDist = Infinity;
+    for (const dir of safe) {
+      const nx = head.x + dir.x, ny = head.y + dir.y;
+      const d = Math.abs(nx - nearestFood.x) + Math.abs(ny - nearestFood.y);
+      if (Math.random() < 0.1) return dir; // 10% random
+      if (d < bestDist) { bestDist = d; best = dir; }
+    }
+    return best;
   }
-  return best;
+
+  // AGGRESSIVE: hunt player when longer than all opponents, otherwise chase food
+  if (personality === AI_PERS.AGGRESSIVE) {
+    const aiLength = aiSnake.length;
+    // Find longest opponent
+    let longestOpponentLength = 0;
+    let targetHead = null;
+    for (const snake of allSnakes) {
+      if (!snake || snake === aiSnake || !snake.length) continue;
+      if (snake.length > longestOpponentLength) {
+        longestOpponentLength = snake.length;
+        targetHead = snake[0];
+      }
+    }
+    const huntPlayer = targetHead && aiLength >= longestOpponentLength;
+    const target = huntPlayer ? targetHead : nearestFood;
+
+    if (!target) return safe[Math.floor(Math.random() * safe.length)];
+    let best = safe[0], bestDist = Infinity;
+    for (const dir of safe) {
+      const nx = head.x + dir.x, ny = head.y + dir.y;
+      const d = Math.abs(nx - target.x) + Math.abs(ny - target.y);
+      if (Math.random() < 0.05) return dir; // 5% random for variety
+      if (d < bestDist) { bestDist = d; best = dir; }
+    }
+    return best;
+  }
+
+  // Fallback
+  return safe[Math.floor(Math.random() * safe.length)];
 }
 
 // Compute active speed multiplier from active items
@@ -405,12 +453,12 @@ function tickEndless(state) {
 export function GameCanvas({ mode, mapType, skin, aiPersonality, onBack }) {
   const canvasRef = useRef(null);
   const skinData = getSkin(skin);
-  const [state, setState] = useState(() => initState(mode, mapType));
+  const [state, setState] = useState(() => initState(mode, mapType, aiPersonality));
 
   // Sync to mode prop changes (restart)
   useEffect(() => {
-    setState(initState(mode, mapType));
-  }, [mode, mapType]);
+    setState(initState(mode, mapType, aiPersonality));
+  }, [mode, mapType, aiPersonality]);
 
   // Keyboard controls
   useEffect(() => {
@@ -785,7 +833,7 @@ export function GameCanvas({ mode, mapType, skin, aiPersonality, onBack }) {
   };
 
   const handlePause = () => setState(s => ({ ...s, paused: !s.paused }));
-  const handleRestart = () => setState(initState(state.mode));
+  const handleRestart = () => setState(initState(state.mode, state.mapType, state.aiPersonality));
 
   const { score, timeLeft, gameOver, paused, aiSnakes: aiSnakesState, mode: gameMode, wave, activeItems } = state;
   const displayTime = gameMode === 'battle' ? `${Math.floor(timeLeft / 60)}:${String(timeLeft % 60).padStart(2, '0')}` : null;
@@ -1079,7 +1127,7 @@ function tickBattle(state) {
   const na = aiSnakes.map(ai => {
     if (!ai?.alive || !ai?.segments?.length) return ai;
     const allSnakes = [np, ...aiSnakes.filter(a => a.alive).map(a => a.segments)];
-    const dir = getAIMove(ai.segments, allSnakes, nf, state.obstacles, state.safeZones);
+    const dir = getAIMove(ai.segments, allSnakes, nf, state.obstacles, state.safeZones, state.aiPersonality);
     if (!dir) return ai;
 
     const head = ai.segments[0];
