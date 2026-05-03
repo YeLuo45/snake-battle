@@ -1,12 +1,21 @@
 import React from 'react';
 
-export function GameOver({ score, highScore, isBattle, isEndless, wave, endlessTop5, ranking, onRestart, onBack }) {
+export function GameOver({ score, highScore, isBattle, isEndless, isBoss, victory, wave, endlessTop5, ranking, onRestart, onBack }) {
   return (
     <div className="modal-overlay">
       <div className="modal">
-        <h2>{isBattle ? '对战结束' : isEndless ? '游戏结束' : '游戏结束'}</h2>
+        <h2>{isBattle ? '对战结束' : isEndless ? '游戏结束' : isBoss ? (victory ? '胜利！' : '挑战失败') : '游戏结束'}</h2>
 
-        {isEndless ? (
+        {isBoss ? (
+          <div className="boss-result">
+            {victory ? (
+              <div style={{ color: '#76c442', fontSize: 20, fontWeight: 'bold' }}>恭喜击败BOSS！</div>
+            ) : (
+              <div style={{ color: '#e94560', fontSize: 18 }}>BOSS 仍然存活...</div>
+            )}
+            <div className="final-score">得分：{score}</div>
+          </div>
+        ) : isEndless ? (
           <div className="endless-result">
             <div className="wave-result">波次：<strong>{wave}</strong></div>
             <div className="final-score">得分：{score}</div>

@@ -3,6 +3,7 @@ import {
   GRID_SIZE, TICK_INTERVAL, DIRECTIONS,
   ITEM_TYPES, MAX_ITEMS_ON_MAP, ITEM_SPAWN_MIN_MS, ITEM_SPAWN_MAX_MS,
   ENDLESS_MAX_WAVE, ENDLESS_SPEED_INCREASE_PER_WAVE, ENDLESS_FOOD_DELAY_INCREASE_PER_WAVE, ENDLESS_TOP5_KEY,
+  MAP_CONFIGS,
 } from '../utils/constants';
 import { getSkin } from '../utils/skins';
 import { GameOver } from './GameOver';
@@ -25,24 +26,31 @@ function randomEdge() {
   return { x, y, dir };
 }
 
-function spawnFood(allSnakes, existingFoods) {
+function spawnFood(allSnakes, existingFoods, mapType = 'classic_map') {
+  const mapConfig = MAP_CONFIGS[mapType] || MAP_CONFIGS.classic_map;
+  const { obstacles } = mapConfig;
   for (let attempt = 0; attempt < 200; attempt++) {
     const pos = { x: Math.floor(Math.random() * GRID_SIZE), y: Math.floor(Math.random() * GRID_SIZE) };
     const occupied = allSnakes.some(snake => snake.some(seg => seg.x === pos.x && seg.y === pos.y))
-      || existingFoods.some(f => f.x === pos.x && f.y === pos.y);
+      || existingFoods.some(f => f.x === pos.x && f.y === pos.y)
+      || obstacles.some(o => o.x === pos.x && o.y === pos.y);
     if (!occupied) return pos;
   }
   return null;
 }
 
-function spawnItem(allSnakes, existingFoods, existingItems) {
+function spawnItem(allSnakes, existingFoods, existingItems, mapType = 'classic_map') {
+  const mapConfig = MAP_CONFIGS[mapType] || MAP_CONFIGS.classic_map;
+  const { obstacles, safeZones } = mapConfig;
   if (existingItems.length >= MAX_ITEMS_ON_MAP) return null;
   for (let attempt = 0; attempt < 200; attempt++) {
     const pos = { x: Math.floor(Math.random() * GRID_SIZE), y: Math.floor(Math.random() * GRID_SIZE) };
+    const inSafeZone = safeZones.some(s => pos.x >= s.x && pos.x < s.x + s.w && pos.y >= s.y && pos.y < s.y + s.h);
     const occupied = allSnakes.some(snake => snake.some(seg => seg.x === pos.x && seg.y === pos.y))
       || existingFoods.some(f => f.x === pos.x && f.y === pos.y)
-      || existingItems.some(i => i.x === pos.x && i.y === pos.y);
-    if (!occupied) {
+      || existingItems.some(i => i.x === pos.x && i.y === pos.y)
+      || obstacles.some(o => o.x === pos.x && o.y === pos.y);
+    if (!occupied && !inSafeZone) {
       const typeKeys = Object.keys(ITEM_TYPES);
       const randomType = ITEM_TYPES[typeKeys[Math.floor(Math.random() * typeKeys.length)]];
       return { ...pos, ...randomType, uid: Date.now() + Math.random() };
@@ -55,7 +63,7 @@ function getRandomSpawnDelay() {
   return ITEM_SPAWN_MIN_MS + Math.random() * (ITEM_SPAWN_MAX_MS - ITEM_SPAWN_MIN_MS);
 }
 
-function initState(mode) {
+function initState(mode, mapType = 'classic_map') {
   const playerSnake = createSnake(Math.floor(GRID_SIZE / 2), Math.floor(GRID_SIZE / 2), 3, DIRECTIONS.RIGHT);
   const aiSnakes = mode === 'battle' ? [
     { id: 0, color: '#e94560', segments: createSnake(...Object.values(randomEdge()), 3), alive: true },
@@ -63,19 +71,29 @@ function initState(mode) {
     { id: 2, color: '#ffd93d', segments: createSnake(...Object.values(randomEdge()), 3), alive: true },
   ] : [];
 
+  // BOSS snake - long, spawned from an edge
+  const bossSnake = mode === 'boss' ? [
+    { id: 'boss', color: '#ff2222', segments: createBossSnake(), alive: true },
+  ] : [];
+
   const allSnakes = [playerSnake, ...aiSnakes.filter(a => a.alive).map(a => a.segments)];
   const foods = [];
   for (let i = 0; i < (mode === 'battle' ? 5 : 1); i++) {
-    const f = spawnFood(allSnakes, foods);
+    const f = spawnFood(allSnakes, foods, mapType);
     if (f) foods.push(f);
   }
 
+  // Get map elements from config
+  const mapConfig = MAP_CONFIGS[mapType] || MAP_CONFIGS.classic_map;
+
   return {
     mode,
+    mapType,
     playerSnake,
     playerDir: 'RIGHT',
     playerAlive: true,
     aiSnakes,
+    bossSnake,
     foods,
     score: 0,
     gameOver: false,
@@ -84,15 +102,41 @@ function initState(mode) {
     initialized: true,
     // Endless mode
     wave: 1,
-    waveProgress: 0, // 0 = food remaining, 1 = next wave triggered
+    waveProgress: 0,
     waveAnnounceTimer: 0,
     // Items
     items: [],
-    activeItems: [], // { id, endTime, speedMultiplier, isShield, isGhost, isMagnet }
+    activeItems: [],
     nextItemSpawn: getRandomSpawnDelay(),
     // Tick speed for endless (base 150)
     baseTickInterval: mode === 'endless' ? 150 : (TICK_INTERVAL[mode] || 150),
+    // BOSS mode
+    bossHp: mode === 'boss' ? BOSS_MAX_HP : 0,
+    bossSprintTimer: 0,
+    bossSprintCooldown: BOSS_SPRINT_INTERVAL, // start with full cooldown
+    bossSprinting: false,
+    bossSprintDir: null,
+    victory: false,
+    // Map elements (V3 M3)
+    obstacles: mapConfig.obstacles,
+    safeZones: mapConfig.safeZones,
+    portals: mapConfig.portals,
+    // Player placed items
+    placedMines: [],
+    portalPair: null,
+    isReverseControls: false,
   };
+}
+
+function createBossSnake() {
+  // Spawn a 10-segment boss snake from a random edge
+  const edge = Math.floor(Math.random() * 4);
+  let x, y, dir;
+  if (edge === 0) { x = Math.floor(GRID_SIZE / 2); y = 0; dir = DIRECTIONS.DOWN; }
+  else if (edge === 1) { x = GRID_SIZE - 1; y = Math.floor(GRID_SIZE / 2); dir = DIRECTIONS.LEFT; }
+  else if (edge === 2) { x = Math.floor(GRID_SIZE / 2); y = GRID_SIZE - 1; dir = DIRECTIONS.UP; }
+  else { x = 0; y = Math.floor(GRID_SIZE / 2); dir = DIRECTIONS.RIGHT; }
+  return createSnake(x, y, 10, dir);
 }
 
 function getAIMove(aiSnake, allSnakes, foods) {
@@ -157,19 +201,72 @@ function hasShield(activeItems) {
   return activeItems.some(a => a.isShield);
 }
 
+// Check if reverse controls active
+function isReverseControlsActive(activeItems) {
+  return activeItems.some(a => a.isReverse);
+}
+
+// Check if invisible active
+function isInvisibleActive(activeItems) {
+  return activeItems.some(a => a.isInvisible);
+}
+
+// Get opposite direction for reverse effect
+function getReverseDirection(dir) {
+  const opposite = { UP: 'DOWN', DOWN: 'UP', LEFT: 'RIGHT', RIGHT: 'LEFT' };
+  return opposite[dir] || dir;
+}
+
+// Check if position is occupied by any snake (helper)
+function isOccupiedByAnySnake(pos, snakes) {
+  return snakes.some(snake => snake.some(seg => seg.x === pos.x && seg.y === pos.y));
+}
+
+// Place a mine at position
+function placeMine(state, x, y) {
+  return {
+    ...state,
+    placedMines: [...state.placedMines, { x, y, uid: Date.now() }],
+  };
+}
+
+// Teleport through portal pair
+function teleportThroughPortal(state, head) {
+  const pair = state.portalPair;
+  if (!pair || pair.length < 2) return head;
+  if (head.x === pair[0].x && head.y === pair[0].y) {
+    return { ...pair[1] };
+  } else if (head.x === pair[1].x && head.y === pair[1].y) {
+    return { ...pair[0] };
+  }
+  return head;
+}
+
+// Create portal pair (consumes 2 PORTAL items, creates linked pair)
+function createPortalPair(state) {
+  // Spawn two portal positions near each other
+  const baseX = Math.floor(Math.random() * (GRID_SIZE - 4)) + 2;
+  const baseY = Math.floor(Math.random() * (GRID_SIZE - 4)) + 2;
+  const offset = Math.floor(Math.random() * 2) === 0 ? 2 : -2;
+  const pair = Math.random() < 0.5
+    ? [{ x: baseX, y: baseY }, { x: baseX + offset, y: baseY }]
+    : [{ x: baseX, y: baseY }, { x: baseX, y: baseY + offset }];
+  return { ...state, portalPair: pair };
+}
+
 // Apply item effect to state
 function applyItemEffect(state, item) {
   const newActive = [...state.activeItems];
   if (item.id === 'SPEED_UP') {
-    newActive.push({ id: item.id, endTime: Date.now() + item.duration, speedMultiplier: 1.5, isShield: false, isGhost: false, isMagnet: false });
+    newActive.push({ id: item.id, endTime: Date.now() + item.duration, speedMultiplier: 1.5, isShield: false, isGhost: false, isMagnet: false, isInvisible: false, isReverse: false });
   } else if (item.id === 'SPEED_DOWN') {
-    newActive.push({ id: item.id, endTime: Date.now() + item.duration, speedMultiplier: 0.6, isShield: false, isGhost: false, isMagnet: false });
+    newActive.push({ id: item.id, endTime: Date.now() + item.duration, speedMultiplier: 0.6, isShield: false, isGhost: false, isMagnet: false, isInvisible: false, isReverse: false });
   } else if (item.id === 'SHIELD') {
-    newActive.push({ id: item.id, endTime: null, speedMultiplier: 1.0, isShield: true, isGhost: false, isMagnet: false });
+    newActive.push({ id: item.id, endTime: null, speedMultiplier: 1.0, isShield: true, isGhost: false, isMagnet: false, isInvisible: false, isReverse: false });
   } else if (item.id === 'GHOST') {
-    newActive.push({ id: item.id, endTime: Date.now() + item.duration, speedMultiplier: 1.0, isShield: false, isGhost: true, isMagnet: false });
+    newActive.push({ id: item.id, endTime: Date.now() + item.duration, speedMultiplier: 1.0, isShield: false, isGhost: true, isMagnet: false, isInvisible: false, isReverse: false });
   } else if (item.id === 'MAGNET') {
-    newActive.push({ id: item.id, endTime: Date.now() + item.duration, speedMultiplier: 1.0, isShield: false, isGhost: false, isMagnet: true });
+    newActive.push({ id: item.id, endTime: Date.now() + item.duration, speedMultiplier: 1.0, isShield: false, isGhost: false, isMagnet: true, isInvisible: false, isReverse: false });
   } else if (item.id === 'GROWTH') {
     // Instant growth +3 segments
     const added = Array.from({ length: 3 }, () => ({ ...state.playerSnake[state.playerSnake.length - 1] }));
@@ -177,6 +274,39 @@ function applyItemEffect(state, item) {
       ...state,
       playerSnake: [...state.playerSnake, ...added],
     };
+  } else if (item.id === 'INVISIBLE') {
+    newActive.push({ id: item.id, endTime: Date.now() + item.duration, speedMultiplier: 1.0, isShield: false, isGhost: false, isMagnet: false, isInvisible: true, isReverse: false });
+    return { ...state, activeItems: newActive, isInvisible: true };
+  } else if (item.id === 'CLONE') {
+    // Create a decoy that follows a slightly delayed path
+    const decoySegments = state.playerSnake.slice(0, Math.max(3, Math.floor(state.playerSnake.length * 0.6)));
+    return {
+      ...state,
+      cloneDecoy: { segments: decoySegments, endTime: Date.now() + 8000 },
+    };
+  } else if (item.id === 'MINE') {
+    // Place mine at current head position
+    return placeMine(state, state.playerSnake[0].x, state.playerSnake[0].y);
+  } else if (item.id === 'PORTAL') {
+    if (!state.portalPair) {
+      // First portal - remember this position (will be replaced when second is collected)
+      return { ...state, portalPair: [{ x: state.playerSnake[0].x, y: state.playerSnake[0].y }] };
+    } else {
+      // Second portal - complete the pair
+      const newPair = [...state.portalPair, { x: state.playerSnake[0].x, y: state.playerSnake[0].y }];
+      return { ...state, portalPair: newPair.length >= 2 ? newPair.slice(-2) : newPair };
+    }
+  } else if (item.id === 'SHRINK') {
+    // Instant shrink -3 segments (minimum length 3)
+    const newLength = Math.max(3, state.playerSnake.length - 3);
+    const removed = state.playerSnake.length - newLength;
+    return {
+      ...state,
+      playerSnake: state.playerSnake.slice(0, newLength),
+    };
+  } else if (item.id === 'REVERSE') {
+    newActive.push({ id: item.id, endTime: Date.now() + item.duration, speedMultiplier: 1.0, isShield: false, isGhost: false, isMagnet: false, isInvisible: false, isReverse: true });
+    return { ...state, activeItems: newActive, isReverseControls: true };
   }
   return { ...state, activeItems: newActive };
 }
@@ -209,6 +339,16 @@ function tickEndless(state) {
     return { ...state, gameOver: true, playerAlive: false };
   }
 
+  // Check obstacle collision (rock = instant death unless ghost)
+  const obstacleHit = !ghostActive && (state.obstacles ?? []).some(o => o.x === newHead.x && o.y === newHead.y);
+  if (obstacleHit) {
+    if (shieldActive) {
+      const newActive = activeItems.filter(a => !a.isShield);
+      return { ...state, activeItems: newActive, playerDir: playerDir };
+    }
+    return { ...state, gameOver: true, playerAlive: false };
+  }
+
   // Self collision
   if (playerSnake.some((s, i) => i > 0 && s.x === newHead.x && s.y === newHead.y)) {
     if (shieldActive) {
@@ -222,43 +362,49 @@ function tickEndless(state) {
   const foodIdx = (foods ?? []).findIndex(f => f.x === newHead.x && f.y === newHead.y);
   if (foodIdx >= 0) {
     const newFoods = foods.filter((_, i) => i !== foodIdx);
-    const spawned = spawnFood([playerSnake], newFoods);
+    const spawned = spawnFood([playerSnake], newFoods, state.mapType);
     const waveCoeff = wave;
     // Wave complete?
     if (newFoods.length === 0) {
       const nextWave = Math.min(wave + 1, ENDLESS_MAX_WAVE);
       const newBaseInterval = TICK_INTERVAL.endless * Math.pow(1 - ENDLESS_SPEED_INCREASE_PER_WAVE, wave - 1);
+      // Safe zone 1.5x score
+      const inSafeZone = (state.safeZones ?? []).some(s => newHead.x >= s.x && newHead.x < s.x + s.w && newHead.y >= s.y && newHead.y < s.y + s.h);
+      const scoreGain = (inSafeZone ? 15 : 10) * waveCoeff;
       return {
         ...state,
         playerSnake: [newHead, ...playerSnake],
         foods: spawned ? [spawned] : [],
-        score: score + 10 * waveCoeff,
+        score: score + scoreGain,
         wave: nextWave,
         waveAnnounceTimer: 60, // 1 second at 60fps
         baseTickInterval: TICK_INTERVAL.endless * Math.pow(1 - ENDLESS_SPEED_INCREASE_PER_WAVE, nextWave - 1),
         waveProgress: 0,
       };
     }
+    // Safe zone 1.5x score
+    const inSafeZone = (state.safeZones ?? []).some(s => newHead.x >= s.x && newHead.x < s.x + s.w && newHead.y >= s.y && newHead.y < s.y + s.h);
+    const scoreGain = (inSafeZone ? 15 : 10) * waveCoeff;
     return {
       ...state,
       playerSnake: [newHead, ...playerSnake],
       foods: spawned ? [...newFoods, spawned] : newFoods,
-      score: score + 10 * waveCoeff,
+      score: score + scoreGain,
     };
   }
 
   return { ...state, playerSnake: [newHead, ...playerSnake.slice(0, -1)] };
 }
 
-export function GameCanvas({ mode, skin, onBack }) {
+export function GameCanvas({ mode, mapType, skin, onBack }) {
   const canvasRef = useRef(null);
   const skinData = getSkin(skin);
-  const [state, setState] = useState(() => initState(mode));
+  const [state, setState] = useState(() => initState(mode, mapType));
 
   // Sync to mode prop changes (restart)
   useEffect(() => {
-    setState(initState(mode));
-  }, [mode]);
+    setState(initState(mode, mapType));
+  }, [mode, mapType]);
 
   // Keyboard controls
   useEffect(() => {
@@ -306,6 +452,7 @@ export function GameCanvas({ mode, skin, onBack }) {
 
         if (prev.mode === 'classic') return tickClassic(prev);
         if (prev.mode === 'endless') return tickEndless(prev);
+        if (prev.mode === 'boss') return tickBoss(prev);
         return tickBattle(prev);
       });
     };
@@ -355,8 +502,19 @@ export function GameCanvas({ mode, skin, onBack }) {
     const interval = setInterval(() => {
       setState(prev => {
         const now = Date.now();
-        const updated = prev.activeItems.filter(a => a.endTime === null || a.endTime > now);
-        return { ...prev, activeItems: updated };
+        let updated = prev.activeItems.filter(a => a.endTime === null || a.endTime > now);
+        const expired = prev.activeItems.filter(a => a.endTime !== null && a.endTime <= now);
+        let next = { ...prev, activeItems: updated };
+        // Reset states for expired items
+        for (const ex of expired) {
+          if (ex.isInvisible) next.isInvisible = false;
+          if (ex.isReverse) next.isReverseControls = false;
+        }
+        // Clone decoy expiry
+        if (prev.cloneDecoy && prev.cloneDecoy.endTime <= now) {
+          next = { ...next, cloneDecoy: null };
+        }
+        return next;
       });
     }, 100);
 
@@ -457,7 +615,42 @@ export function GameCanvas({ mode, skin, onBack }) {
       ctx.fillText(item.icon, cx, cy);
     }
 
-    function drawSnake(segments, color, isGhost = false) {
+    // Draw portal pair
+    if (state.portalPair && state.portalPair.length === 2) {
+      for (const p of state.portalPair) {
+        ctx.fillStyle = '#8800ff';
+        ctx.shadowColor = '#8800ff';
+        ctx.shadowBlur = 12;
+        ctx.beginPath();
+        ctx.arc(p.x * cellSize + cellSize / 2, p.y * cellSize + cellSize / 2, cellSize / 2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.shadowBlur = 0;
+      }
+      // Draw connecting line between portals
+      ctx.strokeStyle = 'rgba(136, 0, 255, 0.3)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(state.portalPair[0].x * cellSize + cellSize / 2, state.portalPair[0].y * cellSize + cellSize / 2);
+      ctx.lineTo(state.portalPair[1].x * cellSize + cellSize / 2, state.portalPair[1].y * cellSize + cellSize / 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    // Draw placed mines
+    for (const mine of state.placedMines) {
+      ctx.fillStyle = '#ff2200';
+      ctx.shadowColor = '#ff2200';
+      ctx.shadowBlur = 6;
+      ctx.font = `${Math.floor(cellSize * 0.8)}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('✸', mine.x * cellSize + cellSize / 2, mine.y * cellSize + cellSize / 2);
+      ctx.shadowBlur = 0;
+    }
+
+    function drawSnake(segments, color, isGhost = false, isInvisibleSnake = false) {
+      if (isInvisibleSnake) return; // Don't draw invisible snake
       for (let i = segments.length - 1; i >= 0; i--) {
         const seg = segments[i];
         ctx.fillStyle = isGhost ? 'rgba(255,255,255,0.5)' : color;
@@ -468,9 +661,44 @@ export function GameCanvas({ mode, skin, onBack }) {
     }
 
     const ghostActive = isGhostActive(state.activeItems);
-    if (playerAlive) drawSnake(playerSnake, skinData.snakeColor, ghostActive);
+    const invisibleActive = isInvisibleActive(state.activeItems);
+    if (playerAlive) drawSnake(playerSnake, skinData.snakeColor, ghostActive, invisibleActive);
+    // Draw clone decoy
+    if (state.cloneDecoy && state.cloneDecoy.segments?.length) {
+      drawSnake(state.cloneDecoy.segments, 'rgba(255,136,255,0.6)', false, false);
+    }
     for (const ai of aiSnakes) {
       if (ai.alive) drawSnake(ai.segments, ai.color);
+    }
+
+    // Draw BOSS snake
+    if (gMode === 'boss' && state.bossSnake) {
+      for (const boss of state.bossSnake) {
+        if (boss?.alive && boss?.segments?.length) {
+          // Draw boss with glow effect when sprinting
+          const isSprinting = state.bossSprinting;
+          for (let i = boss.segments.length - 1; i >= 0; i--) {
+            const seg = boss.segments[i];
+            const isHead = i === 0;
+            if (isSprinting) {
+              ctx.shadowColor = '#ff0000';
+              ctx.shadowBlur = 12;
+            }
+            ctx.fillStyle = isHead ? '#ff4444' : (isSprinting ? '#ff2222' : '#cc0000');
+            ctx.globalAlpha = i === 0 ? 1 : 0.9;
+            ctx.fillRect(seg.x * cellSize + 1, seg.y * cellSize + 1, cellSize - 2, cellSize - 2);
+            ctx.globalAlpha = 1;
+            ctx.shadowBlur = 0;
+          }
+        }
+      }
+    }
+
+    // BOSS HP bar drawn in header, not overlay
+    // Sprint warning flash overlay
+    if (gMode === 'boss' && state.bossSprinting) {
+      ctx.fillStyle = 'rgba(255, 0, 0, 0.08)';
+      ctx.fillRect(0, 0, canvasSize, canvasSize);
     }
 
     // Wave announce overlay
@@ -542,11 +770,27 @@ export function GameCanvas({ mode, skin, onBack }) {
     <div className="game-wrapper">
       <div className="game-header">
         <button className="back-btn" onClick={onBack}>← 返回</button>
-        <span className="score-display">
-          {gameMode === 'endless'
-            ? `WAVE ${wave} | 得分：${score}`
-            : `${displayTime ? `${displayTime} | ` : ''}得分：${score}`}
-        </span>
+        <div className="score-display boss-header">
+          {gameMode === 'boss' && (
+            <div className="boss-hp-bar">
+              <span className="boss-hp-label">BOSS</span>
+              <div className="boss-hp-track">
+                <div
+                  className="boss-hp-fill"
+                  style={{ width: `${(state.bossHp / BOSS_MAX_HP) * 100}%` }}
+                />
+              </div>
+              <span className="boss-hp-num">{state.bossHp}/{BOSS_MAX_HP}</span>
+            </div>
+          )}
+          <span className="score-text">
+            {gameMode === 'endless'
+              ? `WAVE ${wave} | 得分：${score}`
+              : gameMode === 'boss'
+              ? `得分：${score}`
+              : `${displayTime ? `${displayTime} | ` : ''}得分：${score}`}
+          </span>
+        </div>
         <div />
       </div>
 
@@ -574,6 +818,8 @@ export function GameCanvas({ mode, skin, onBack }) {
           highScore={0}
           isBattle={gameMode === 'battle'}
           isEndless={gameMode === 'endless'}
+          isBoss={gameMode === 'boss'}
+          victory={state.victory}
           wave={gameMode === 'endless' ? wave : null}
           endlessTop5={gameMode === 'endless' ? getEndlessTop5() : null}
           ranking={gameMode === 'battle' ? getRanking() : null}
@@ -586,10 +832,17 @@ export function GameCanvas({ mode, skin, onBack }) {
 }
 
 function tickClassic(state) {
-  const { playerSnake, playerDir, foods, score, activeItems } = state;
-  const dir = DIRECTIONS[playerDir];
+  const { playerSnake, playerDir, foods, score, activeItems, isReverseControls } = state;
+  let dir = DIRECTIONS[playerDir];
+  // Apply reverse controls
+  if (isReverseControls) {
+    dir = getReverseDirection(playerDir);
+    dir = DIRECTIONS[dir];
+  } else {
+    dir = DIRECTIONS[playerDir];
+  }
   const head = playerSnake[0];
-  const newHead = { x: head.x + dir.x, y: head.y + dir.y };
+  let newHead = { x: head.x + dir.x, y: head.y + dir.y };
   const ghostActive = isGhostActive(activeItems);
   const shieldActive = hasShield(activeItems);
 
@@ -599,6 +852,28 @@ function tickClassic(state) {
   } else {
     newHead.x = (newHead.x + GRID_SIZE) % GRID_SIZE;
     newHead.y = (newHead.y + GRID_SIZE) % GRID_SIZE;
+  }
+
+  // Check portal teleportation
+  const portalPair = state.portalPair;
+  if (portalPair && portalPair.length === 2) {
+    if (newHead.x === portalPair[0].x && newHead.y === portalPair[0].y) {
+      newHead = { ...portalPair[1] };
+    } else if (newHead.x === portalPair[1].x && newHead.y === portalPair[1].y) {
+      newHead = { ...portalPair[0] };
+    }
+  }
+
+  // Check mine collision (before wall check)
+  const mineHit = state.placedMines?.some(m => m.x === newHead.x && m.y === newHead.y);
+  if (mineHit) {
+    if (shieldActive) {
+      // Consume shield, survive, remove mine
+      const newActive = activeItems.filter(a => !a.isShield);
+      const newMines = state.placedMines.filter(m => !(m.x === newHead.x && m.y === newHead.y));
+      return { ...state, activeItems: newActive, placedMines: newMines };
+    }
+    return { ...state, gameOver: true, playerAlive: false };
   }
 
   if (wallHit) {
@@ -628,31 +903,60 @@ function tickClassic(state) {
   const foodIdx = (nextState.foods ?? []).findIndex(f => f.x === newHead.x && f.y === newHead.y);
   if (foodIdx >= 0) {
     const newFoods = nextState.foods.filter((_, i) => i !== foodIdx);
-    const spawned = spawnFood([nextState.playerSnake], newFoods);
+    const spawned = spawnFood([nextState.playerSnake], newFoods, state.mapType);
+    // Safe zone 1.5x score multiplier
+    const inSafeZone = (state.safeZones ?? []).some(s => newHead.x >= s.x && newHead.x < s.x + s.w && newHead.y >= s.y && newHead.y < s.y + s.h);
+    const scoreGain = inSafeZone ? 15 : 10;
     return {
       ...nextState,
       playerSnake: [newHead, ...nextState.playerSnake],
       foods: spawned ? [...newFoods, spawned] : newFoods,
-      score: nextState.score + 10,
+      score: nextState.score + scoreGain,
     };
   }
   return { ...nextState, playerSnake: [newHead, ...nextState.playerSnake.slice(0, -1)] };
 }
 
 function tickBattle(state) {
-  const { playerSnake, playerDir, playerAlive, aiSnakes, foods, score } = state;
+  const { playerSnake, playerDir, playerAlive, aiSnakes, foods, score, activeItems, isReverseControls } = state;
   let np = playerSnake, npa = playerAlive, nf = foods, ns = score;
 
   if (npa && np?.length) {
-    const dir = DIRECTIONS[playerDir];
+    let dir = DIRECTIONS[playerDir];
+    if (isReverseControls) {
+      dir = DIRECTIONS[getReverseDirection(playerDir)];
+    }
     const head = np[0];
-    const newHead = { x: head.x + dir.x, y: head.y + dir.y };
+    let newHead = { x: head.x + dir.x, y: head.y + dir.y };
 
-    if (newHead.x < 0 || newHead.x >= GRID_SIZE || newHead.y < 0 || newHead.y >= GRID_SIZE) {
+    // Portal teleportation
+    const portalPair = state.portalPair;
+    if (portalPair && portalPair.length === 2) {
+      if (newHead.x === portalPair[0].x && newHead.y === portalPair[0].y) {
+        newHead = { ...portalPair[1] };
+      } else if (newHead.x === portalPair[1].x && newHead.y === portalPair[1].y) {
+        newHead = { ...portalPair[0] };
+      }
+    }
+
+    // Mine collision for player
+    const mineHit = state.placedMines?.some(m => m.x === newHead.x && m.y === newHead.y);
+    const shieldActive = hasShield(activeItems);
+    if (mineHit) {
+      if (shieldActive) {
+        const newActive = activeItems.filter(a => !a.isShield);
+        const newMines = state.placedMines.filter(m => !(m.x === newHead.x && m.y === newHead.y));
+        state = { ...state, activeItems: newActive, placedMines: newMines };
+      } else {
+        npa = false;
+      }
+    }
+
+    if (npa && (newHead.x < 0 || newHead.x >= GRID_SIZE || newHead.y < 0 || newHead.y >= GRID_SIZE)) {
       npa = false;
-    } else if (np.some((s, i) => i > 0 && s.x === newHead.x && s.y === newHead.y)) {
+    } else if (npa && np.some((s, i) => i > 0 && s.x === newHead.x && s.y === newHead.y)) {
       npa = false;
-    } else {
+    } else if (npa) {
       const fi = nf?.findIndex ? nf.findIndex(f => f.x === newHead.x && f.y === newHead.y) : -1;
       if (fi >= 0 && nf) {
         np = [newHead, ...np];
@@ -668,6 +972,12 @@ function tickBattle(state) {
     npa = false;
   }
 
+  // AI mine collision check helper
+  const checkMineHitForSnake = (segments) => {
+    if (!segments?.length) return false;
+    return state.placedMines?.some(m => m.x === segments[0].x && m.y === segments[0].y);
+  };
+
   const na = aiSnakes.map(ai => {
     if (!ai?.alive || !ai?.segments?.length) return ai;
     const allSnakes = [np, ...aiSnakes.filter(a => a.alive).map(a => a.segments)];
@@ -675,7 +985,24 @@ function tickBattle(state) {
     if (!dir) return ai;
 
     const head = ai.segments[0];
-    const newHead = { x: head.x + dir.x, y: head.y + dir.y };
+    let newHead = { x: head.x + dir.x, y: head.y + dir.y };
+
+    // Portal for AI
+    const portalPair = state.portalPair;
+    if (portalPair && portalPair.length === 2) {
+      if (newHead.x === portalPair[0].x && newHead.y === portalPair[0].y) {
+        newHead = { ...portalPair[1] };
+      } else if (newHead.x === portalPair[1].x && newHead.y === portalPair[1].y) {
+        newHead = { ...portalPair[0] };
+      }
+    }
+
+    // AI mine collision
+    if (checkMineHitForSnake([newHead])) {
+      let newFoods = [...(nf || [])];
+      for (let j = 0; j < 3; j++) { const f = spawnFood([np, ...aiSnakes.filter(a => a.alive && a.id !== ai.id).map(a => a.segments)], newFoods); if (f) newFoods.push(f); }
+      return { ...ai, alive: false };
+    }
 
     if (newHead.x < 0 || newHead.x >= GRID_SIZE || newHead.y < 0 || newHead.y >= GRID_SIZE) {
       let newFoods = [...(nf || [])];
@@ -724,5 +1051,222 @@ function tickBattle(state) {
     }
   }
 
+  // Check player-item collision after movement
+  if (npa && np?.length) {
+    const itemIdx = (state.items ?? []).findIndex(item => item.x === np[0].x && item.y === np[0].y);
+    if (itemIdx >= 0) {
+      const item = state.items[itemIdx];
+      const newItems = state.items.filter((_, i) => i !== itemIdx);
+      const afterItem = applyItemEffect({ ...state, items: newItems }, item);
+      return { ...afterItem, playerSnake: np, playerAlive: npa, aiSnakes: na, foods: nf, score: ns };
+    }
+  }
+
   return { ...state, playerSnake: np, playerAlive: npa, aiSnakes: na, foods: nf, score: ns };
+}
+
+// BOSS battle tick
+function tickBoss(state) {
+  const { playerSnake, playerDir, playerAlive, bossSnake, foods, score, bossHp, bossSprinting, bossSprintDir, bossSprintTimer, bossSprintCooldown, activeItems } = state;
+
+  // Player movement
+  let np = playerSnake, npa = playerAlive, ns = score, nf = foods;
+  const ghostActive = isGhostActive(activeItems);
+  const shieldActive = hasShield(activeItems);
+
+  if (npa && np?.length) {
+    const dir = DIRECTIONS[playerDir];
+    const head = np[0];
+    const newHead = { x: head.x + dir.x, y: head.y + dir.y };
+
+    let wallHit = false;
+    if (!ghostActive) {
+      if (newHead.x < 0 || newHead.x >= GRID_SIZE || newHead.y < 0 || newHead.y >= GRID_SIZE) wallHit = true;
+    } else {
+      newHead.x = (newHead.x + GRID_SIZE) % GRID_SIZE;
+      newHead.y = (newHead.y + GRID_SIZE) % GRID_SIZE;
+    }
+
+    if (wallHit) {
+      if (shieldActive) {
+        np = [newHead, ...np.slice(0, -1)];
+        const newActive = activeItems.filter(a => !a.isShield);
+        return { ...state, playerSnake: np, playerDir, activeItems: newActive };
+      }
+      npa = false;
+    } else if (np.some((s, i) => i > 0 && s.x === newHead.x && s.y === newHead.y)) {
+      if (shieldActive) {
+        np = [newHead, ...np.slice(0, -1)];
+        const newActive = activeItems.filter(a => !a.isShield);
+        return { ...state, playerSnake: np, playerDir, activeItems: newActive };
+      }
+      npa = false;
+    } else {
+      const fi = nf?.findIndex ? nf.findIndex(f => f.x === newHead.x && f.y === newHead.y) : -1;
+      if (fi >= 0 && nf) {
+        np = [newHead, ...np];
+        nf = nf.filter((_, i) => i !== fi);
+        const spawned = spawnFood([np, ...(bossSnake || []).filter(b => b.alive).map(b => b.segments)], nf);
+        if (spawned) nf = [...nf, spawned];
+        ns += 10;
+      } else {
+        np = [newHead, ...np.slice(0, -1)];
+      }
+    }
+  } else if (npa) {
+    npa = false;
+  }
+
+  // BOSS AI movement
+  const nb = bossSnake.map(boss => {
+    if (!boss?.alive || !boss?.segments?.length) return boss;
+    const allSnakes = [np, ...bossSnake.filter(b => b.alive).map(b => b.segments)];
+
+    // BOSS AI: chase player with sprint
+    let bossDir = bossSprintDir;
+    if (!bossSprinting) {
+      // Normal tracking AI: move toward player
+      if (np?.length && boss.segments.length) {
+        const bossHead = boss.segments[0];
+        const playerHead = np[0];
+        // Decide direction toward player
+        const dx = playerHead.x - bossHead.x;
+        const dy = playerHead.y - bossHead.y;
+        // Pick dominant axis
+        const dirs = [];
+        if (dx > 0) dirs.push(DIRECTIONS.RIGHT);
+        else if (dx < 0) dirs.push(DIRECTIONS.LEFT);
+        if (dy > 0) dirs.push(DIRECTIONS.DOWN);
+        else if (dy < 0) dirs.push(DIRECTIONS.UP);
+        // Filter safe
+        const safe = dirs.filter(dir => {
+          const nx = bossHead.x + dir.x, ny = bossHead.y + dir.y;
+          if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) return false;
+          // Check self collision (skip head)
+          for (let i = 1; i < boss.segments.length; i++) {
+            if (boss.segments[i].x === nx && boss.segments[i].y === ny) return false;
+          }
+          return true;
+        });
+        if (safe.length > 0) {
+          bossDir = safe[Math.floor(Math.random() * safe.length)];
+        } else {
+          // Fallback: pick any safe direction
+          const allDirs = [DIRECTIONS.UP, DIRECTIONS.RIGHT, DIRECTIONS.DOWN, DIRECTIONS.LEFT];
+          const fallback = allDirs.filter(dir => {
+            const nx = bossHead.x + dir.x, ny = bossHead.y + dir.y;
+            if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) return false;
+            for (let i = 1; i < boss.segments.length; i++) {
+              if (boss.segments[i].x === nx && boss.segments[i].y === ny) return false;
+            }
+            return true;
+          });
+          if (fallback.length > 0) bossDir = fallback[Math.floor(Math.random() * fallback.length)];
+        }
+      }
+    }
+
+    if (!bossDir) return boss;
+
+    const head = boss.segments[0];
+    // Sprint: move extra fast (extra segment per tick)
+    const moveSteps = bossSprinting ? 2 : 1;
+    let newSegs = boss.segments;
+    for (let step = 0; step < moveSteps; step++) {
+      const newHead = { x: head.x + bossDir.x * (step + 1), y: head.y + bossDir.y * (step + 1) };
+      // Wall: boss doesn't wrap, just stops at edge
+      if (newHead.x < 0 || newHead.x >= GRID_SIZE || newHead.y < 0 || newHead.y >= GRID_SIZE) break;
+      // Self collision: boss shrinks and loses HP
+      const selfHit = newSegs.some((s, i) => i > 0 && s.x === newHead.x && s.y === newHead.y);
+      if (selfHit) break;
+      // Head-on collision with player costs HP
+      if (npa && np?.length && newHead.x === np[0].x && newHead.y === np[0].y) {
+        // Boss hits player head - player dies or loses segment
+        npa = false;
+      }
+      newSegs = [newHead, ...newSegs.slice(0, -1)];
+    }
+    return { ...boss, segments: newSegs, dir: bossDir };
+  });
+
+  // Check player head collision with boss body segments (deal damage to boss)
+  let newBossHp = bossHp;
+  let newScore = ns;
+  let newVictory = false;
+  if (npa && np?.length && nb.length > 0) {
+    const boss = nb[0];
+    if (boss?.alive && boss?.segments?.length) {
+      const playerHead = np[0];
+      // If player head collides with boss body (not head), boss takes damage
+      for (let i = 1; i < boss.segments.length; i++) {
+        if (boss.segments[i].x === playerHead.x && boss.segments[i].y === playerHead.y) {
+          // Player ate a boss segment - boss loses HP, snake shrinks
+          newBossHp = Math.max(0, newBossHp - 1);
+          newScore += 100;
+          // Shrink boss
+          if (boss.segments.length > 1) {
+            boss.segments = boss.segments.slice(0, -1);
+          }
+          if (newBossHp <= 0) {
+            newVictory = true;
+          }
+          break;
+        }
+      }
+      // Player head hits boss head
+      if (boss.segments[0].x === playerHead.x && boss.segments[0].y === playerHead.y) {
+        npa = false;
+      }
+    }
+  }
+
+  // BOSS sprint logic (cooldown timer tracked in state)
+  let newSprintCooldown = bossSprintCooldown;
+  let newSprintTimer = bossSprintTimer;
+  let newSprinting = bossSprinting;
+  let newSprintDir = bossSprintDir;
+
+  if (bossSprinting) {
+    newSprintTimer -= TICK_INTERVAL.boss;
+    if (newSprintTimer <= 0) {
+      newSprinting = false;
+      newSprintTimer = 0;
+      newSprintCooldown = BOSS_SPRINT_INTERVAL;
+    }
+  } else {
+    newSprintCooldown -= TICK_INTERVAL.boss;
+    if (newSprintCooldown <= 0) {
+      // Start sprint toward player
+      newSprinting = true;
+      newSprintTimer = BOSS_SPRINT_DURATION;
+      newSprintCooldown = 0;
+      if (np?.length && nb[0]?.segments?.length) {
+        const bossHead = nb[0].segments[0];
+        const playerHead = np[0];
+        const dx = playerHead.x - bossHead.x;
+        const dy = playerHead.y - bossHead.y;
+        if (Math.abs(dx) >= Math.abs(dy)) {
+          newSprintDir = dx > 0 ? DIRECTIONS.RIGHT : DIRECTIONS.LEFT;
+        } else {
+          newSprintDir = dy > 0 ? DIRECTIONS.DOWN : DIRECTIONS.UP;
+        }
+      }
+    }
+  }
+
+  return {
+    ...state,
+    playerSnake: np,
+    playerAlive: npa,
+    bossSnake: nb,
+    foods: nf,
+    score: newScore,
+    bossHp: newBossHp,
+    bossSprinting: newSprinting,
+    bossSprintDir: newSprintDir,
+    bossSprintTimer: newSprintTimer,
+    bossSprintCooldown: newSprintCooldown,
+    victory: newVictory,
+    gameOver: !npa || newVictory,
+  };
 }

@@ -6,6 +6,7 @@ import { useStorage } from './hooks/useStorage';
 
 function App() {
   const [mode, setMode] = useState(null);
+  const [mapType, setMapType] = useState('classic_map');
   const [skin, setSkin] = useStorage('snake-classic-skin', 'classic');
 
   return (
@@ -13,9 +14,9 @@ function App() {
       <h1 className="title">贪吃蛇大作战</h1>
       <SkinPicker skin={skin} setSkin={setSkin} />
       {!mode ? (
-        <ModeSelect onSelect={setMode} />
+        <ModeSelect onSelect={setMode} onMapSelect={setMapType} currentMap={mapType} />
       ) : (
-        <GameCanvas mode={mode} skin={skin} onBack={() => setMode(null)} />
+        <GameCanvas mode={mode} mapType={mapType} skin={skin} onBack={() => setMode(null)} />
       )}
     </div>
   );
