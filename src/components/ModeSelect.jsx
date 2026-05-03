@@ -9,6 +9,9 @@ export function ModeSelect({ onSelect }) {
       <button className="mode-btn battle" onClick={() => onSelect('battle')}>
         AI 对战
       </button>
+      <button className="mode-btn endless" onClick={() => onSelect('endless')}>
+        无尽模式
+      </button>
     </div>
   );
 }

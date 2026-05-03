@@ -68,6 +68,62 @@ body {
   color: #fff;
 }
 
+.mode-btn.endless {
+  background: #aa44ff;
+  color: #fff;
+}
+
+/* Endless top5 */
+.endless-result {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.wave-result {
+  font-size: 20px;
+  color: #aa44ff;
+  font-weight: bold;
+}
+
+.endless-top5 {
+  margin-top: 8px;
+}
+
+.endless-top5 h4 {
+  font-size: 14px;
+  color: #888;
+  margin-bottom: 8px;
+}
+
+.top5-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.top5-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+  padding: 4px 8px;
+  background: #333;
+  border-radius: 6px;
+  color: #ccc;
+}
+
+.top5-row.first {
+  background: #4a2d6b;
+  color: #ddaaff;
+  font-weight: bold;
+}
+
+.top5-row .rank { color: #888; min-width: 28px; }
+.top5-row .wave { flex: 1; text-align: left; padding-left: 8px; }
+.top5-row .score { color: #76c442; min-width: 60px; text-align: right; }
+.top5-row .date { color: #666; min-width: 70px; text-align: right; font-size: 12px; }
+
 /* Skin Picker */
 .skin-picker {
   display: flex;
