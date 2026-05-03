@@ -1,4 +1,5 @@
 import React from 'react';
+import { AI_PERSONALITIES } from '../hooks/useAI';
 
 const MAP_OPTIONS = [
   { id: 'classic_map', label: '经典', emoji: '⬜' },
@@ -8,7 +9,21 @@ const MAP_OPTIONS = [
   { id: 'mixed_map', label: '混合', emoji: '🎲' },
 ];
 
-export function ModeSelect({ onSelect, onMapSelect, currentMap }) {
+const AI_PERSONALITY_OPTIONS = [
+  { id: AI_PERSONALITIES.GREEDY, label: '贪婪', emoji: '🍎', desc: '追食物' },
+  { id: AI_PERSONALITIES.AGGRESSIVE, label: '激进', emoji: '⚔️', desc: '追玩家' },
+  { id: AI_PERSONALITIES.RANDOM, label: '随机', emoji: '🎲', desc: '随机移动' },
+];
+
+export function ModeSelect({ onSelect, onMapSelect, currentMap, onAIPersonalitySelect, currentAIPersonality }) {
+  const handleModeSelect = (mode) => {
+    // If battle mode, require AI personality to be selected first
+    if (mode === 'battle' && (!currentAIPersonality)) {
+      return; // Don't navigate yet, wait for AI personality
+    }
+    onSelect(mode);
+  };
+
   return (
     <div className="mode-select">
       <div className="map-selector">
@@ -27,18 +42,31 @@ export function ModeSelect({ onSelect, onMapSelect, currentMap }) {
           ))}
         </div>
       </div>
+      <div className="ai-personality-selector">
+        <div className="ai-personality-label">AI 人格（AI对战模式）：</div>
+        <div className="ai-personality-buttons">
+          {AI_PERSONALITY_OPTIONS.map(opt => (
+            <button
+              key={opt.id}
+              className={`ai-personality-btn ${currentAIPersonality === opt.id ? 'selected' : ''}`}
+              onClick={() => onAIPersonalitySelect(opt.id)}
+              title={opt.desc}
+            >
+              <span className="ai-personality-emoji">{opt.emoji}</span>
+              <span className="ai-personality-name">{opt.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="mode-buttons">
-        <button className="mode-btn classic" onClick={() => onSelect('classic')}>
+        <button className="mode-btn classic" onClick={() => handleModeSelect('classic')}>
           经典模式
         </button>
-        <button className="mode-btn battle" onClick={() => onSelect('battle')}>
+        <button className="mode-btn battle" onClick={() => handleModeSelect('battle')}>
           AI 对战
         </button>
-        <button className="mode-btn endless" onClick={() => onSelect('endless')}>
+        <button className="mode-btn endless" onClick={() => handleModeSelect('endless')}>
           无尽模式
-        </button>
-        <button className="mode-btn boss" onClick={() => onSelect('boss')}>
-          BOSS 战
         </button>
       </div>
     </div>

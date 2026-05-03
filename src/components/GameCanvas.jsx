@@ -63,7 +63,7 @@ function getRandomSpawnDelay() {
   return ITEM_SPAWN_MIN_MS + Math.random() * (ITEM_SPAWN_MAX_MS - ITEM_SPAWN_MIN_MS);
 }
 
-function initState(mode, mapType = 'classic_map') {
+function initState(mode, mapType = 'classic_map', aiPersonality = null) {
   const playerSnake = createSnake(Math.floor(GRID_SIZE / 2), Math.floor(GRID_SIZE / 2), 3, DIRECTIONS.RIGHT);
   const aiSnakes = mode === 'battle' ? [
     { id: 0, color: '#e94560', segments: createSnake(...Object.values(randomEdge()), 3), alive: true },
@@ -139,14 +139,20 @@ function createBossSnake() {
   return createSnake(x, y, 10, dir);
 }
 
-function getAIMove(aiSnake, allSnakes, foods) {
+function getAIMove(aiSnake, allSnakes, foods, obstacles = [], safeZones = []) {
   if (!aiSnake?.length || !aiSnake[0]) return null;
   const head = aiSnake[0];
   const possible = [DIRECTIONS.UP, DIRECTIONS.RIGHT, DIRECTIONS.DOWN, DIRECTIONS.LEFT];
 
+  const isInSafeZone = (x, y) => safeZones.some(s => x >= s.x && x < s.x + s.w && y >= s.y && y < s.y + s.h);
+
   const safe = possible.filter(dir => {
     const nx = head.x + dir.x, ny = head.y + dir.y;
     if (nx < 0 || nx >= GRID_SIZE || ny < 0 || ny >= GRID_SIZE) return false;
+    // Avoid obstacles
+    if (obstacles.some(o => o.x === nx && o.y === ny)) return false;
+    // Avoid safe zones (AI doesn't enter)
+    if (isInSafeZone(nx, ny)) return false;
     for (const snake of allSnakes) {
       if (!snake?.length) continue;
       const startIdx = snake === aiSnake ? 1 : 0;
@@ -396,7 +402,7 @@ function tickEndless(state) {
   return { ...state, playerSnake: [newHead, ...playerSnake.slice(0, -1)] };
 }
 
-export function GameCanvas({ mode, mapType, skin, onBack }) {
+export function GameCanvas({ mode, mapType, skin, aiPersonality, onBack }) {
   const canvasRef = useRef(null);
   const skinData = getSkin(skin);
   const [state, setState] = useState(() => initState(mode, mapType));
@@ -585,6 +591,62 @@ export function GameCanvas({ mode, mapType, skin, onBack }) {
       ctx.moveTo(0, i * cellSize);
       ctx.lineTo(canvasSize, i * cellSize);
       ctx.stroke();
+    }
+
+    // Draw safe zones (green areas, AI avoids, 1.5x score)
+    for (const zone of state.safeZones) {
+      ctx.fillStyle = 'rgba(0, 255, 100, 0.15)';
+      ctx.fillRect(zone.x * cellSize, zone.y * cellSize, zone.w * cellSize, zone.h * cellSize);
+      ctx.strokeStyle = 'rgba(0, 255, 100, 0.4)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(zone.x * cellSize, zone.y * cellSize, zone.w * cellSize, zone.h * cellSize);
+      // Label
+      ctx.fillStyle = 'rgba(0, 255, 100, 0.5)';
+      ctx.font = `${Math.floor(cellSize * 0.6)}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('安全区', (zone.x + zone.w / 2) * cellSize, (zone.y + zone.h / 2) * cellSize);
+    }
+
+    // Draw obstacles (rocks)
+    for (const obs of state.obstacles) {
+      ctx.fillStyle = '#666666';
+      ctx.shadowColor = '#333333';
+      ctx.shadowBlur = 4;
+      ctx.beginPath();
+      ctx.arc(obs.x * cellSize + cellSize / 2, obs.y * cellSize + cellSize / 2, cellSize / 2 - 1, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      // Rock texture
+      ctx.fillStyle = '#888888';
+      ctx.beginPath();
+      ctx.arc(obs.x * cellSize + cellSize / 2 - 2, obs.y * cellSize + cellSize / 2 - 2, cellSize / 6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Draw map portals (from MAP_CONFIGS, not player-placed)
+    for (const pair of state.portals) {
+      // Portal A
+      ctx.fillStyle = '#8800ff';
+      ctx.shadowColor = '#8800ff';
+      ctx.shadowBlur = 12;
+      ctx.beginPath();
+      ctx.arc(pair.a.x * cellSize + cellSize / 2, pair.a.y * cellSize + cellSize / 2, cellSize / 2, 0, Math.PI * 2);
+      ctx.fill();
+      // Portal B
+      ctx.beginPath();
+      ctx.arc(pair.b.x * cellSize + cellSize / 2, pair.b.y * cellSize + cellSize / 2, cellSize / 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      // Connecting line
+      ctx.strokeStyle = 'rgba(136, 0, 255, 0.3)';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
+      ctx.beginPath();
+      ctx.moveTo(pair.a.x * cellSize + cellSize / 2, pair.a.y * cellSize + cellSize / 2);
+      ctx.lineTo(pair.b.x * cellSize + cellSize / 2, pair.b.y * cellSize + cellSize / 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     for (const food of foods) {
@@ -854,7 +916,16 @@ function tickClassic(state) {
     newHead.y = (newHead.y + GRID_SIZE) % GRID_SIZE;
   }
 
-  // Check portal teleportation
+  // Check map portal teleportation (portals from MAP_CONFIGS)
+  for (const pair of state.portals) {
+    if (newHead.x === pair.a.x && newHead.y === pair.a.y) {
+      newHead = { ...pair.b };
+    } else if (newHead.x === pair.b.x && newHead.y === pair.b.y) {
+      newHead = { ...pair.a };
+    }
+  }
+
+  // Check portal teleportation (player-placed portal pair)
   const portalPair = state.portalPair;
   if (portalPair && portalPair.length === 2) {
     if (newHead.x === portalPair[0].x && newHead.y === portalPair[0].y) {
@@ -877,6 +948,15 @@ function tickClassic(state) {
   }
 
   if (wallHit) {
+    if (shieldActive) {
+      const newActive = activeItems.filter(a => !a.isShield);
+      return { ...state, activeItems: newActive };
+    }
+    return { ...state, gameOver: true, playerAlive: false };
+  }
+  // Check obstacle collision (rock = instant death unless ghost)
+  const obstacleHit = !ghostActive && (state.obstacles ?? []).some(o => o.x === newHead.x && o.y === newHead.y);
+  if (obstacleHit) {
     if (shieldActive) {
       const newActive = activeItems.filter(a => !a.isShield);
       return { ...state, activeItems: newActive };
@@ -929,7 +1009,16 @@ function tickBattle(state) {
     const head = np[0];
     let newHead = { x: head.x + dir.x, y: head.y + dir.y };
 
-    // Portal teleportation
+    // Map portal teleportation
+    for (const pair of state.portals) {
+      if (newHead.x === pair.a.x && newHead.y === pair.a.y) {
+        newHead = { ...pair.b };
+      } else if (newHead.x === pair.b.x && newHead.y === pair.b.y) {
+        newHead = { ...pair.a };
+      }
+    }
+
+    // Portal teleportation (player-placed)
     const portalPair = state.portalPair;
     if (portalPair && portalPair.length === 2) {
       if (newHead.x === portalPair[0].x && newHead.y === portalPair[0].y) {
@@ -956,6 +1045,15 @@ function tickBattle(state) {
       npa = false;
     } else if (npa && np.some((s, i) => i > 0 && s.x === newHead.x && s.y === newHead.y)) {
       npa = false;
+    } else if (npa && (state.obstacles ?? []).some(o => o.x === newHead.x && o.y === newHead.y)) {
+      // Obstacle collision
+      if (shieldActive) {
+        const newActive = activeItems.filter(a => !a.isShield);
+        const newMines = state.placedMines.filter(m => !(m.x === newHead.x && m.y === newHead.y));
+        state = { ...state, activeItems: newActive, placedMines: newMines };
+      } else {
+        npa = false;
+      }
     } else if (npa) {
       const fi = nf?.findIndex ? nf.findIndex(f => f.x === newHead.x && f.y === newHead.y) : -1;
       if (fi >= 0 && nf) {
@@ -981,13 +1079,22 @@ function tickBattle(state) {
   const na = aiSnakes.map(ai => {
     if (!ai?.alive || !ai?.segments?.length) return ai;
     const allSnakes = [np, ...aiSnakes.filter(a => a.alive).map(a => a.segments)];
-    const dir = getAIMove(ai.segments, allSnakes, nf);
+    const dir = getAIMove(ai.segments, allSnakes, nf, state.obstacles, state.safeZones);
     if (!dir) return ai;
 
     const head = ai.segments[0];
     let newHead = { x: head.x + dir.x, y: head.y + dir.y };
 
-    // Portal for AI
+    // Portal for AI (map portals)
+    for (const pair of state.portals) {
+      if (newHead.x === pair.a.x && newHead.y === pair.a.y) {
+        newHead = { ...pair.b };
+      } else if (newHead.x === pair.b.x && newHead.y === pair.b.y) {
+        newHead = { ...pair.a };
+      }
+    }
+
+    // Portal for AI (player-placed)
     const portalPair = state.portalPair;
     if (portalPair && portalPair.length === 2) {
       if (newHead.x === portalPair[0].x && newHead.y === portalPair[0].y) {
@@ -999,6 +1106,14 @@ function tickBattle(state) {
 
     // AI mine collision
     if (checkMineHitForSnake([newHead])) {
+      let newFoods = [...(nf || [])];
+      for (let j = 0; j < 3; j++) { const f = spawnFood([np, ...aiSnakes.filter(a => a.alive && a.id !== ai.id).map(a => a.segments)], newFoods); if (f) newFoods.push(f); }
+      return { ...ai, alive: false };
+    }
+
+    // AI obstacle collision
+    if ((state.obstacles ?? []).some(o => o.x === newHead.x && o.y === newHead.y)) {
+      // Treat obstacle like wall - AI dies
       let newFoods = [...(nf || [])];
       for (let j = 0; j < 3; j++) { const f = spawnFood([np, ...aiSnakes.filter(a => a.alive && a.id !== ai.id).map(a => a.segments)], newFoods); if (f) newFoods.push(f); }
       return { ...ai, alive: false };
@@ -1087,7 +1202,10 @@ function tickBoss(state) {
       newHead.y = (newHead.y + GRID_SIZE) % GRID_SIZE;
     }
 
-    if (wallHit) {
+    // Check obstacle collision for player
+    const playerObstacleHit = !ghostActive && (state.obstacles ?? []).some(o => o.x === newHead.x && o.y === newHead.y);
+
+    if (wallHit || playerObstacleHit) {
       if (shieldActive) {
         np = [newHead, ...np.slice(0, -1)];
         const newActive = activeItems.filter(a => !a.isShield);
@@ -1179,6 +1297,8 @@ function tickBoss(state) {
       // Self collision: boss shrinks and loses HP
       const selfHit = newSegs.some((s, i) => i > 0 && s.x === newHead.x && s.y === newHead.y);
       if (selfHit) break;
+      // Obstacle collision for boss
+      if ((state.obstacles ?? []).some(o => o.x === newHead.x && o.y === newHead.y)) break;
       // Head-on collision with player costs HP
       if (npa && np?.length && newHead.x === np[0].x && newHead.y === np[0].y) {
         // Boss hits player head - player dies or loses segment
